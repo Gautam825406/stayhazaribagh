@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  BadgeCheck, BedDouble, BookOpen, Building2, Check, ChevronRight, Crown, Home,
+  BadgeCheck, BedDouble, BookOpen, Building2, Check, ChevronLeft, ChevronRight, Crown, Home,
   KeyRound, LogOut, MapPin, MessageSquare, Navigation, Phone, Plus, Search,
   ShieldCheck, ShieldAlert, Star, UserRound, UtensilsCrossed, Wallet, X,
 } from 'lucide-react'
@@ -17,8 +17,11 @@ import {
   setAdminToken, setStoredUser, setToken, updateListing as apiUpdateListing,
   verifyListing as apiVerifyListing,
 } from './lib/api'
-import { approxDistanceKm, type LatLng } from './lib/geo'
+import { approxDistanceKm, CITY_CENTRES, type LatLng } from './lib/geo'
 import './styles.css'
+
+/** Results pagination: 5 listings per page — page 1 is the 5 nearest PGs. */
+const PAGE_SIZE = 5
 
 type View = 'home' | 'bookings' | 'owner' | 'admin'
 type CityFilter = 'Both' | City
@@ -69,6 +72,7 @@ export default function App() {
   const [verifiedTab, setVerifiedTab] = useState<VerifiedTab>('All')
   const [userLoc, setUserLoc] = useState<LatLng | null>(null)
   const [nearestFirst, setNearestFirst] = useState(false)
+  const [page, setPage] = useState(1)
 
   const apiStatus: ApiStatus = !apiConfigured() ? 'local' : apiListings ? 'live' : apiFailed ? 'offline' : 'local'
   const apiIds = useMemo(() => new Set((apiListings ?? []).map((p) => p.id)), [apiListings])
@@ -156,14 +160,30 @@ export default function App() {
       if (query && !(p.name + p.locality + p.address).toLowerCase().includes(query.toLowerCase())) return false
       return true
     })
-    // Near Me: nearest first by APPROX locality distance (see src/lib/geo.ts).
-    if (nearestFirst && userLoc) {
-      return [...list].sort(
-        (a, b) => approxDistanceKm(userLoc, a.locality, a.city) - approxDistanceKm(userLoc, b.locality, b.city),
-      )
-    }
-    return list
+    // "Nearby first" ordering (approx, locality centre se — see src/lib/geo.ts):
+    // Near Me on + location mili ho to user ki location se, warna Hazaribagh
+    // centre (23.992, 85.361) se — taaki page 1 hamesha 5 sabse nazdeek PG ho.
+    // Naam tie-breaker rakhta hai taaki order har render par stable rahe.
+    const ref = nearestFirst && userLoc ? userLoc : CITY_CENTRES.Hazaribagh
+    return [...list].sort((a, b) => {
+      const d = approxDistanceKm(ref, a.locality, a.city) - approxDistanceKm(ref, b.locality, b.city)
+      return d !== 0 ? d : a.name.localeCompare(b.name)
+    })
   }, [displayProperties, verifiedTab, city, locality, gender, maxRent, query, nearestFirst, userLoc])
+
+  // Pagination: search / filter / tab / sort badalte hi wapas page 1 par.
+  useEffect(() => { setPage(1) }, [verifiedTab, city, locality, gender, maxRent, query, nearestFirst, userLoc])
+
+  /** Total pages for the current filtered list (min 1, taaki "Page 1 of 1" dikhe). */
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  /** Clamp: list chhoti ho jaye (jaise API reload ke baad) to page khaali na rahe. */
+  const safePage = Math.min(page, totalPages)
+  const pageItems = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+
+  function goToPage(n: number) {
+    setPage(Math.min(Math.max(1, n), totalPages))
+    document.getElementById('listings')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   const localitiesForCity = city === 'Both' ? ALL_LOCALITIES : LOCALITIES[city]
 
@@ -440,6 +460,7 @@ export default function App() {
             db={viewDb} city={city} setCity={setCity} locality={locality} setLocality={setLocality}
             gender={gender} setGender={setGender} maxRent={maxRent} setMaxRent={setMaxRent}
             query={query} setQuery={setQuery} filtered={filtered} localitiesForCity={localitiesForCity}
+            pageItems={pageItems} page={safePage} totalPages={totalPages} onPageChange={goToPage}
             totalBeds={totalBeds} totalProps={totalProps} verifiedCount={verifiedCount}
             verifiedTab={verifiedTab} setVerifiedTab={setVerifiedTab}
             userLoc={userLoc} nearestFirst={nearestFirst} onToggleNearMe={toggleNearMe}
@@ -547,10 +568,24 @@ export default function App() {
 }
 
 /* ---------------- Home ---------------- */
+/** Page-number window for the pagination bar (e.g. 1 … 4 5 6 … 187). */
+function pageWindow(page: number, totalPages: number): (number | '…')[] {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1)
+  const keep = new Set([1, 2, totalPages - 1, totalPages, page - 1, page, page + 1])
+  const nums = [...keep].filter((n) => n >= 1 && n <= totalPages).sort((a, b) => a - b)
+  const out: (number | '…')[] = []
+  nums.forEach((n, i) => {
+    if (i > 0 && n - nums[i - 1] > 1) out.push('…')
+    out.push(n)
+  })
+  return out
+}
+
 function HomeView(props: {
   db: DB; city: CityFilter; setCity: (c: CityFilter) => void; locality: string; setLocality: (s: string) => void
   gender: 'All' | Gender; setGender: (g: 'All' | Gender) => void; maxRent: number; setMaxRent: (n: number) => void
   query: string; setQuery: (s: string) => void; filtered: Property[]; localitiesForCity: string[]
+  pageItems: Property[]; page: number; totalPages: number; onPageChange: (n: number) => void
   totalBeds: number; totalProps: number; verifiedCount: number
   verifiedTab: VerifiedTab; setVerifiedTab: (t: VerifiedTab) => void
   userLoc: LatLng | null; nearestFirst: boolean; onToggleNearMe: () => void
@@ -640,7 +675,11 @@ function HomeView(props: {
             <Navigation size={14} /> {props.nearestFirst ? 'Near Me: On' : 'Near Me'}
           </button>
         </div>
-        {props.nearestFirst && props.userLoc && <p className="small muted" style={{ marginTop: 8 }}>Nearest pehle — distance approx hai (locality ke centre se).</p>}
+        <p className="small muted" style={{ marginTop: 8 }}>
+          {props.nearestFirst && props.userLoc
+            ? 'Nearest pehle — tumhari location se (approx distance, locality ke centre se).'
+            : 'Nearest pehle — Hazaribagh centre se (approx distance, locality ke centre se).'}
+        </p>
         {props.apiLoading && filtered.length === 0 ? (
           <div className="grid"><div className="skeleton" /><div className="skeleton" /><div className="skeleton" /></div>
         ) : filtered.length === 0 ? (
@@ -651,9 +690,33 @@ function HomeView(props: {
             <button className="btn btn-orange" onClick={props.onList}><Plus size={18} /> Apna PG FREE List Karein</button>
           </div>
         ) : (
-          <div className="grid">
-            {filtered.map((p, i) => <PropertyCard key={p.id} p={p} db={db} index={i} userLoc={props.userLoc} onSelect={props.onSelect} />)}
-          </div>
+          <>
+            <div className="grid">
+              {props.pageItems.map((p, i) => <PropertyCard key={p.id} p={p} db={db} index={i} userLoc={props.userLoc} onSelect={props.onSelect} />)}
+            </div>
+            <nav className="pagination" aria-label="PG results pages">
+              <p className="page-info">
+                Showing {(props.page - 1) * PAGE_SIZE + 1}–{Math.min(props.page * PAGE_SIZE, filtered.length)} of {filtered.length}
+              </p>
+              <button className="page-btn" disabled={props.page <= 1} onClick={() => props.onPageChange(props.page - 1)} aria-label="Previous page">
+                <ChevronLeft size={18} /> Prev
+              </button>
+              {pageWindow(props.page, props.totalPages).map((n, i) =>
+                n === '…' ? (
+                  <span key={`e${i}`} className="page-ellipsis" aria-hidden="true">…</span>
+                ) : (
+                  <button key={n} className={`page-btn ${n === props.page ? 'active' : ''}`} aria-current={n === props.page ? 'page' : undefined}
+                    onClick={() => props.onPageChange(n)}>
+                    {n}
+                  </button>
+                ),
+              )}
+              <button className="page-btn" disabled={props.page >= props.totalPages} onClick={() => props.onPageChange(props.page + 1)} aria-label="Next page">
+                Next <ChevronRight size={18} />
+              </button>
+              <p className="page-info small muted">Page {props.page} of {props.totalPages}</p>
+            </nav>
+          </>
         )}
       </section>
 

@@ -215,3 +215,11 @@ footer h3{color:#fff}
   *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
   html{scroll-behavior:auto}
 }
+
+/* Results pagination — 5 per page. Big tap targets, wraps on phones. */
+.pagination{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-top:28px}
+.pagination .page-info{width:100%;text-align:center;margin:0;font-weight:600}
+.page-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:44px;min-height:44px;padding:10px 14px;border-radius:12px;border:1.5px solid var(--line);background:#fff;color:var(--ink);font-weight:700;font-size:15px}
+.page-btn.active{background:var(--teal);color:#fff;border-color:var(--teal)}
+.page-btn:disabled{opacity:.45;cursor:not-allowed}
+.page-ellipsis{display:inline-flex;align-items:center;min-height:44px;padding:0 4px;color:var(--muted);font-weight:700}
