@@ -3,8 +3,7 @@ services:
     name: stayhazaribagh-api
     runtime: python
     plan: free
-    buildCommand: pip install -r backend/requirements.txt
-    preDeployCommand: python -m backend.seed
+    buildCommand: pip install -r backend/requirements.txt && python -m backend.seed
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: SECRET_KEY
