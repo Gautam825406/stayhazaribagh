@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  BadgeCheck, BedDouble, BookOpen, Building2, Check, ChevronLeft, ChevronRight, Crown, Home,
+  BadgeCheck, BedDouble, BookOpen, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Crown, Home,
   KeyRound, LogOut, MapPin, MessageSquare, Navigation, Phone, Plus, Search,
   ShieldCheck, ShieldAlert, Star, UserRound, UtensilsCrossed, Wallet, X,
 } from 'lucide-react'
@@ -94,10 +94,21 @@ export default function App() {
       setApiListings(res.items.map(apiListingToProperty))
       setApiFailed(false)
     } catch {
-      // Backend unreachable / bad response — keep working from localStorage.
-      setApiListings(null)
-      setApiFailed(true)
-      showToast('Backend se connect nahi ho paya — device par save hua data dikh raha hai')
+      // Render free tier sleeps when idle — the first call can fail while it
+      // wakes up. Retry once after a short wait before giving up to local data.
+      try {
+        await new Promise((r) => setTimeout(r, 5000))
+        const res = await listAllListings({
+          verified: verifiedTab === 'All' ? undefined : verifiedTab === 'Verified',
+        })
+        setApiListings(res.items.map(apiListingToProperty))
+        setApiFailed(false)
+      } catch {
+        // Backend unreachable / bad response — keep working from localStorage.
+        setApiListings(null)
+        setApiFailed(true)
+        showToast('Backend se connect nahi ho paya — device par save hua data dikh raha hai')
+      }
     } finally {
       setApiLoading(false)
     }
@@ -148,6 +159,9 @@ export default function App() {
 
   const totalBeds = displayProperties.reduce((s, p) => s + p.availableBeds, 0)
   const totalProps = displayProperties.length
+  /** While the backend is still waking up (Render free tier sleeps), never
+      show a misleading "0" — show "…" until real data (or a real 0) arrives. */
+  const bedsLoading = apiConfigured() && apiListings === null && !apiFailed
   const verifiedCount = displayProperties.filter((p) => p.verified).length
 
   const filtered = useMemo(() => {
@@ -411,7 +425,7 @@ export default function App() {
       {/* Trust strip */}
       <div className="trust-strip">
         <div className="container">
-          <span><span className="pulse" /> <b>{totalBeds}</b>&nbsp;live beds available</span>
+          <span><span className="pulse" /> {bedsLoading ? <b>…</b> : <b>{totalBeds}</b>}&nbsp;live beds available</span>
           <span><BadgeCheck size={14} /> No Brokerage</span>
           <span><ShieldCheck size={14} /> Verified Owners</span>
           <span><Plus size={14} /> Listing FREE</span>
@@ -425,7 +439,7 @@ export default function App() {
             <span className="brand-mark"><b>S</b><i><BedDouble size={12} /></i></span>
             <span>
               <span className="brand-name">StayHazaribagh<em>.</em></span>
-              <span className="brand-sub" style={{ display: 'block' }}>Hazaribagh • Ranchi — Jharkhand</span>
+              <span className="brand-sub">Hazaribagh • Ranchi — Jharkhand</span>
             </span>
           </a>
           <div className="header-actions">
@@ -434,14 +448,14 @@ export default function App() {
               <span className="account-chip admin-chip" title="Super Admin logged in">
                 <span className="avatar" style={{ background: '#b45309' }}><Crown size={15} /></span>
                 <span className="account-name">Admin: {adminSessionUser.username}</span>
-                <button className="btn btn-danger btn-sm logout-pill" onClick={adminLogout} aria-label="Super Admin log out"><LogOut size={15} /> Logout</button>
+                <button className="btn btn-danger btn-sm logout-pill" onClick={adminLogout} aria-label="Super Admin log out"><LogOut size={15} /> <span className="logout-text">Logout</span></button>
               </span>
             )}
             {sessionUser ? (
               <span className="account-chip">
                 <span className="avatar">{sessionUser.name[0]?.toUpperCase()}</span>
                 <span className="account-name">{sessionUser.name.split(' ')[0]}</span>
-                <button className="btn btn-danger btn-sm logout-pill" onClick={logout} aria-label="Log out"><LogOut size={15} /> Logout</button>
+                <button className="btn btn-danger btn-sm logout-pill" onClick={logout} aria-label="Log out"><LogOut size={15} /> <span className="logout-text">Logout</span></button>
               </span>
             ) : (
               <>
@@ -594,6 +608,15 @@ function HomeView(props: {
 }) {
   const { db, filtered } = props
   const unverifiedCount = props.totalProps - props.verifiedCount
+  /** Backend still waking up — show "…" instead of a misleading 0. */
+  const loadingCounts = props.apiLoading && props.totalProps === 0
+  const [openFaq, setOpenFaq] = useState<number | null>(null)
+  const FAQS: [string, string][] = [
+    ['Hazaribagh me PG ka rent kitna hota hai?', 'Rent area, sharing aur khane par depend karta hai. Is site par har PG ka total monthly cost (rent + mess + deposit) saaf dikhaya jata hai — koi chhupa hua charge nahi.'],
+    ['StayHazaribagh par brokerage lagti hai?', 'Nahi. Tenant se koi brokerage nahi li jati, aur owner ki listing FREE hai.'],
+    ['Verified badge ka matlab kya hai?', 'Super Admin ne us PG aur owner ki jaanch ki hai. Nayi listing hamesha Not Verified se start hoti hai.'],
+    ['Owner apna PG kaise list kare?', 'Upar List PG FREE button se 4 steps me — PG details, rooms/beds, facilities, aur contact. Listing turant live hogi, Not Verified badge ke saath.'],
+  ]
   return (
     <>
       <section className="hero">
@@ -642,9 +665,9 @@ function HomeView(props: {
             </div>
           </div>
           <div className="stats-row">
-            <div className="stat"><b><CountUp to={props.totalProps} /></b><span>PGs listed</span></div>
-            <div className="stat"><b><CountUp to={props.totalBeds} /></b><span>Beds available</span></div>
-            <div className="stat"><b><CountUp to={props.verifiedCount} /></b><span>Verified PGs</span></div>
+            <div className="stat"><b>{loadingCounts ? '…' : <CountUp to={props.totalProps} />}</b><span>PGs listed</span></div>
+            <div className="stat"><b>{loadingCounts ? '…' : <CountUp to={props.totalBeds} />}</b><span>Beds available</span></div>
+            <div className="stat"><b>{loadingCounts ? '…' : <CountUp to={props.verifiedCount} />}</b><span>Verified PGs</span></div>
             <div className="stat"><b>₹0</b><span>Brokerage — hamesha</span></div>
           </div>
         </div>
@@ -747,10 +770,17 @@ function HomeView(props: {
           <div className="guide"><h3>3. Shift ho jao</h3><p className="muted">Room dekh ke, rent aur rules samajh ke hi shift ho. Verified badge wale PG ko pehle dekho.</p></div>
         </div>
         <h2 style={{ marginTop: 36 }}>Rent FAQs — Hazaribagh</h2>
-        <div className="faq"><b>Hazaribagh me PG ka rent kitna hota hai?</b><span className="muted">Rent area, sharing aur khane par depend karta hai. Is site par har PG ka total monthly cost (rent + mess + deposit) saaf dikhaya jata hai — koi chhupa hua charge nahi.</span></div>
-        <div className="faq"><b>StayHazaribagh par brokerage lagti hai?</b><span className="muted">Nahi. Tenant se koi brokerage nahi li jati, aur owner ki listing FREE hai.</span></div>
-        <div className="faq"><b>Verified badge ka matlab kya hai?</b><span className="muted">Super Admin ne us PG aur owner ki jaanch ki hai. Nayi listing hamesha Not Verified se start hoti hai.</span></div>
-        <div className="faq"><b>Owner apna PG kaise list kare?</b><span className="muted">Upar List PG FREE button se 4 steps me — PG details, rooms/beds, facilities, aur contact. Listing turant live hogi, Not Verified badge ke saath.</span></div>
+        {FAQS.map(([q, a], i) => {
+          const open = openFaq === i
+          return (
+            <div className={`faq ${open ? 'open' : ''}`} key={q}>
+              <button type="button" className="faq-q" aria-expanded={open} onClick={() => setOpenFaq(open ? null : i)}>
+                <b>{q}</b><ChevronDown size={18} className="faq-chev" />
+              </button>
+              {open && <span className="muted faq-a">{a}</span>}
+            </div>
+          )
+        })}
       </section>
     </>
   )

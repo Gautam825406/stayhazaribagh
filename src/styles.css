@@ -144,8 +144,12 @@ label{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}
 .admin-dark input,.admin-dark select{background:#0b1f1f;color:#e6f4f0;border-color:#2a5a5a}
 .guide-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:20px}
 .guide{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:18px;animation:rise .5s ease both}
-.faq{border-bottom:1px solid var(--line);padding:16px 0}
-.faq b{display:block;margin-bottom:6px}
+.faq{border-bottom:1px solid var(--line);padding:12px 0}
+.faq-q{display:flex;width:100%;align-items:center;justify-content:space-between;gap:12px;background:none;border:0;padding:6px 0;text-align:left;color:var(--ink);min-height:44px}
+.faq-q b{font-size:16px;line-height:1.35}
+.faq-chev{flex-shrink:0;color:var(--muted);transition:transform .2s ease}
+.faq.open .faq-chev{transform:rotate(180deg)}
+.faq-a{display:block;margin-top:2px;line-height:1.55}
 footer{background:var(--teal-deep);color:#cfe8e2;margin-top:20px}
 footer .container{padding:36px 18px calc(110px + env(safe-area-inset-bottom))}
 footer a{color:#fbbf24}
@@ -180,9 +184,10 @@ footer h3{color:#fff}
   /* Form controls 16px on phones only — stops iOS auto-zoom on focus */
   input,select,textarea{font-size:16px}
   .topbar-inner{gap:8px;padding:10px 0}
+  .brand{flex-shrink:1;min-width:0}
   .brand-mark{width:38px;height:38px;border-radius:11px}
   .brand-mark b{font-size:20px}
-  .brand-name{font-size:17px}
+  .brand-name{font-size:17px;overflow:hidden;text-overflow:ellipsis;max-width:42vw}
   .brand-sub{display:none}
   .header-actions{gap:6px}
   .header-actions .btn{padding:9px 12px;font-size:13px;min-height:40px}
@@ -191,8 +196,20 @@ footer h3{color:#fff}
   .grid,.guide-grid{grid-template-columns:1fr}
   .stats-row{grid-template-columns:repeat(2,1fr)}
   .stat-tiles{grid-template-columns:repeat(2,1fr)}
-  .hero-inner{padding:36px 0 24px}
-  main{padding-bottom:90px}
+  /* Compact hero on phones: heading + search must fit without a long scroll */
+  .hero-inner{padding:22px 0 16px}
+  .hero h1{font-size:27px;line-height:1.12;margin:10px 0 8px}
+  .hero p{font-size:15px;line-height:1.5}
+  .search-panel{margin-top:16px;padding:14px}
+  .ticker{display:none}
+  .stat{padding:10px 12px}
+  .stat b{font-size:22px}
+  /* Shorter page on phones: tighter sections + smaller headings */
+  .section{padding:28px 0}
+  .section h2{font-size:24px}
+  .guide{padding:14px}
+  .faq{padding:8px 0}
+  main{padding-bottom:96px}
   .sheet{padding:18px 16px}
   .form-grid-2{grid-template-columns:1fr}
   .table-wrap .table{min-width:420px}
@@ -202,14 +219,20 @@ footer h3{color:#fff}
 @media(max-width:480px){
   /* Header List PG button lives in the bottom tab bar (FAB) on small phones */
   .header-actions .btn-orange{display:none}
-  .brand-name{font-size:16px}
+  .brand-name{font-size:15px;max-width:40vw}
   .brand-mark{width:34px;height:34px}
-  .account-chip{font-size:12px}
+  .account-chip{font-size:12px;padding:4px;gap:6px}
+  .avatar{width:28px;height:28px;font-size:12px}
+  /* Compact Logout pill — always inside the viewport */
+  .logout-pill{padding:8px 10px;font-size:12px;min-height:36px;gap:5px}
 }
 @media(max-width:380px){
-  .brand-name{font-size:15px}
+  .brand-name{font-size:15px;max-width:38vw}
   .brand-mark{width:32px;height:32px;border-radius:10px}
   .header-actions .btn{padding:8px 10px;font-size:12px}
+  /* Narrowest phones: Logout becomes icon-only so it can never clip */
+  .logout-text{display:none}
+  .logout-pill{padding:8px;min-width:36px;justify-content:center}
 }
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
