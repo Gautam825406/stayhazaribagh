@@ -9,10 +9,21 @@ import {
   mapsDirectionsUrl, mapsSearchUrl, occupancy, randomSalt, saveDB, timeAgo, uid,
   type City, type DB, type Enquiry, type Gender, type Property, type Role, type User,
 } from './lib/store'
+import {
+  ApiError, apiConfigured, apiErrorMessage, apiListingToProperty, adminLogin,
+  adminSetup, clearAdminToken, clearToken, createEnquiry, createListing, createReview,
+  deleteListing as apiDeleteListing, getStoredUser, getToken, listListings,
+  normalizeAuthResponse, propertyToApiListing, register as apiRegister, login as apiLogin,
+  setAdminToken, setStoredUser, setToken, updateListing as apiUpdateListing,
+  verifyListing as apiVerifyListing,
+} from './lib/api'
+import { approxDistanceKm, type LatLng } from './lib/geo'
 import './styles.css'
 
 type View = 'home' | 'bookings' | 'owner' | 'admin'
 type CityFilter = 'Both' | City
+type VerifiedTab = 'All' | 'Verified' | 'Unverified'
+type ApiStatus = 'local' | 'live' | 'offline'
 
 function CountUp({ to, suffix = '' }: { to: number; suffix?: string }) {
   const [n, setN] = useState(0)
@@ -49,9 +60,75 @@ export default function App() {
   const [bookingCode, setBookingCode] = useState('')
   const [bookingPhone, setBookingPhone] = useState('')
 
+  // --- Backend (FastAPI) wiring: listings come from the API when
+  // VITE_API_URL is set; apiListings stays null in offline/fallback mode,
+  // and the site then reads exactly the same localStorage data as before.
+  const [apiListings, setApiListings] = useState<Property[] | null>(null)
+  const [apiLoading, setApiLoading] = useState(false)
+  const [apiFailed, setApiFailed] = useState(false)
+  const [verifiedTab, setVerifiedTab] = useState<VerifiedTab>('All')
+  const [userLoc, setUserLoc] = useState<LatLng | null>(null)
+  const [nearestFirst, setNearestFirst] = useState(false)
+
+  const apiStatus: ApiStatus = !apiConfigured() ? 'local' : apiListings ? 'live' : apiFailed ? 'offline' : 'local'
+  const apiIds = useMemo(() => new Set((apiListings ?? []).map((p) => p.id)), [apiListings])
+  /** Listings actually shown: API data when loaded, else localStorage data. */
+  const displayProperties: Property[] = apiListings ?? db.properties
+  /** db with its properties swapped for the displayed ones (reviews/enquiries stay local). */
+  const viewDb: DB = useMemo(
+    () => (apiListings ? { ...db, properties: apiListings } : db),
+    [db, apiListings],
+  )
+
+  async function refreshListings(): Promise<void> {
+    if (!apiConfigured()) return
+    setApiLoading(true)
+    try {
+      const res = await listListings({
+        verified: verifiedTab === 'All' ? undefined : verifiedTab === 'Verified',
+        limit: 500,
+      })
+      setApiListings(res.items.map(apiListingToProperty))
+      setApiFailed(false)
+    } catch {
+      // Backend unreachable / bad response — keep working from localStorage.
+      setApiListings(null)
+      setApiFailed(true)
+      showToast('Backend se connect nahi ho paya — device par save hua data dikh raha hai')
+    } finally {
+      setApiLoading(false)
+    }
+  }
+
   useEffect(() => { saveDB(db) }, [db])
   useEffect(() => { if (toast) { const t = setTimeout(() => setToast(''), 3500); return () => clearTimeout(t) } }, [toast])
   useEffect(() => { window.scrollTo({ top: 0 }) }, [view])
+
+  // API mode: if a token + stored user exist but the local 30-day session
+  // expired (or was cleared), restore the local session for the same user
+  // so the header / portals keep working. Only restores users that were
+  // already mirrored locally at login time — never invents an account.
+  useEffect(() => {
+    if (!apiConfigured() || !getToken()) return
+    const stored = getStoredUser()
+    if (!stored) return
+    setDb((prev) => {
+      const next = structuredClone(prev)
+      const existing = next.users.find((u) => u.phone === stored.phone)
+      if (existing && (!next.session || next.session.expiresAt < Date.now())) {
+        next.session = { userId: existing.id, expiresAt: Date.now() + 30 * 86400000 }
+      }
+      return next
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // API mode: (re)load listings from the backend — on mount and whenever
+  // the Verified tab changes (the tab is also passed as ?verified=).
+  useEffect(() => {
+    if (apiConfigured()) void refreshListings()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [verifiedTab])
 
   const adminSessionUser = useMemo(() => {
     if (!db.adminSession || db.adminSession.expiresAt < Date.now() || !db.adminAccount) return null
@@ -66,12 +143,13 @@ export default function App() {
   const showToast = (m: string) => setToast(m)
   const update = (fn: (d: DB) => DB) => setDb((prev) => fn(structuredClone(prev)))
 
-  const totalBeds = db.properties.reduce((s, p) => s + p.availableBeds, 0)
-  const totalProps = db.properties.length
-  const verifiedCount = db.properties.filter((p) => p.verified).length
+  const totalBeds = displayProperties.reduce((s, p) => s + p.availableBeds, 0)
+  const totalProps = displayProperties.length
+  const verifiedCount = displayProperties.filter((p) => p.verified).length
 
   const filtered = useMemo(() => {
-    return db.properties.filter((p) => {
+    const list = displayProperties.filter((p) => {
+      if (verifiedTab !== 'All' && p.verified !== (verifiedTab === 'Verified')) return false
       if (city !== 'Both' && p.city !== city) return false
       if (locality !== 'All' && p.locality !== locality) return false
       if (gender !== 'All' && p.gender !== gender) return false
@@ -79,7 +157,14 @@ export default function App() {
       if (query && !(p.name + p.locality + p.address).toLowerCase().includes(query.toLowerCase())) return false
       return true
     })
-  }, [db.properties, city, locality, gender, maxRent, query])
+    // Near Me: nearest first by APPROX locality distance (see src/lib/geo.ts).
+    if (nearestFirst && userLoc) {
+      return [...list].sort(
+        (a, b) => approxDistanceKm(userLoc, a.locality, a.city) - approxDistanceKm(userLoc, b.locality, b.city),
+      )
+    }
+    return list
+  }, [displayProperties, verifiedTab, city, locality, gender, maxRent, query, nearestFirst, userLoc])
 
   const localitiesForCity = city === 'Both' ? ALL_LOCALITIES : LOCALITIES[city]
 
@@ -91,6 +176,52 @@ export default function App() {
     if (data.password.length < 4) return showToast('Password kam se kam 4 character ka ho')
     const lock = db.failedLogins[phone]
     if (lock && lock.lockUntil > Date.now()) return showToast('5 galat koshish — 15 minute ke liye lock hai. Thodi der baad try karein.')
+    // API mode: register/login against the backend first. A 4xx reply is a
+    // real answer (galat password / account pehle se hai) — show it. Only a
+    // network/server failure falls through to the local behaviour below.
+    if (apiConfigured()) {
+      try {
+        const res = mode === 'signup'
+          ? await apiRegister({ name: data.name.trim(), phone, password: data.password, role: data.role })
+          : await apiLogin({ phone, password: data.password })
+        const auth = normalizeAuthResponse(res, { phone, name: data.name.trim(), role: data.role })
+        if (!auth.token) throw new Error('Server se token nahi mila — dobara try karo')
+        setToken(auth.token)
+        const apiUser = auth.user ?? { name: data.name.trim() || phone, phone, role: data.role }
+        setStoredUser(apiUser)
+        // Mirror the account locally (salted hash, 30-day session) so the
+        // existing session logic and the offline fallback keep working.
+        const salt = randomSalt()
+        const passwordHash = await hashSecret(data.password, salt)
+        update((d) => {
+          const existing = d.users.find((u) => u.phone === phone)
+          if (existing) {
+            existing.name = apiUser.name
+            existing.role = apiUser.role
+            existing.salt = salt
+            existing.passwordHash = passwordHash
+            d.session = { userId: existing.id, expiresAt: Date.now() + 30 * 86400000 }
+          } else {
+            const user: User = {
+              id: apiUser.id !== undefined ? String(apiUser.id) : uid(),
+              name: apiUser.name, phone, email: data.email.trim() || undefined,
+              role: apiUser.role, salt, passwordHash, createdAt: new Date().toISOString(),
+            }
+            d.users.push(user)
+            d.session = { userId: user.id, expiresAt: Date.now() + 30 * 86400000 }
+          }
+          d.failedLogins[phone] = { count: 0, lockUntil: 0 }
+          return d
+        })
+        setAuthOpen(null)
+        showToast(mode === 'signup' ? `Welcome, ${apiUser.name}! Account ban gaya — 30 din tak login rahega.` : `Welcome back, ${apiUser.name}!`)
+        go(apiUser.role === 'owner' ? 'owner' : 'bookings')
+        return
+      } catch (err) {
+        if (err instanceof ApiError && err.status >= 400 && err.status < 500) return showToast(err.message)
+        // Network / 5xx — fall through to local behaviour below.
+      }
+    }
     if (mode === 'signup') {
       if (!data.name.trim()) return showToast('Apna naam daalein')
       if (db.users.some((u) => u.phone === phone)) return showToast('Is number se account pehle se hai — Login karein')
@@ -121,13 +252,136 @@ export default function App() {
     }
   }
 
+  async function handleAdminLogin(username: string, password: string) {
+    const uname = username.trim()
+    if (apiConfigured()) {
+      try {
+        const res = await adminLogin({ admin_id: uname, password })
+        const token = res.access_token ?? res.token ?? ''
+        if (!token) throw new Error('Server se token nahi mila — dobara try karo')
+        setAdminToken(token)
+        // Mirror the admin account locally (salted hash, 30-day session).
+        const salt = randomSalt()
+        const passwordHash = await hashSecret(password, salt)
+        update((d) => {
+          const key = 'admin:' + uname.toLowerCase()
+          if (d.adminAccount) {
+            d.adminAccount.username = uname.toLowerCase()
+            d.adminAccount.salt = salt
+            d.adminAccount.passwordHash = passwordHash
+            d.adminSession = { adminId: d.adminAccount.id, expiresAt: Date.now() + 30 * 86400000 }
+          } else {
+            const acc = { id: uid(), username: uname.toLowerCase(), salt, passwordHash, createdAt: new Date().toISOString() }
+            d.adminAccount = acc
+            d.adminSession = { adminId: acc.id, expiresAt: Date.now() + 30 * 86400000 }
+          }
+          d.failedLogins[key] = { count: 0, lockUntil: 0 }
+          return d
+        })
+        setAuthOpen(null)
+        setAdminUnlocked(true)
+        showToast(`Welcome back, Admin ${uname}!`)
+        go('admin')
+        return
+      } catch (err) {
+        if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+          return showToast('Galat Super Admin ID ya password.')
+        }
+        // Network / 5xx — fall through to local behaviour below.
+      }
+    }
+    const acc = db.adminAccount
+    if (!acc) return showToast('Super Admin account abhi set nahi hai — pehle Admin panel se banao')
+    const lockKey = 'admin:' + uname.toLowerCase()
+    const lock = db.failedLogins[lockKey]
+    if (lock && lock.lockUntil > Date.now()) return showToast('5 galat koshish — 15 minute ke liye lock hai.')
+    const h = await hashSecret(password, acc.salt)
+    if (acc.username.toLowerCase() !== uname.toLowerCase() || h !== acc.passwordHash) {
+      update((d) => {
+        const cur = d.failedLogins[lockKey] || { count: 0, lockUntil: 0 }
+        cur.count += 1
+        if (cur.count >= 5) { cur.lockUntil = Date.now() + 15 * 60000; cur.count = 0 }
+        d.failedLogins[lockKey] = cur
+        return d
+      })
+      return showToast('Galat Super Admin ID ya password.')
+    }
+    update((d) => { d.failedLogins[lockKey] = { count: 0, lockUntil: 0 }; d.adminSession = { adminId: acc.id, expiresAt: Date.now() + 30 * 86400000 }; return d })
+    setAuthOpen(null)
+    setAdminUnlocked(true)
+    showToast(`Welcome back, Admin ${acc.username}!`)
+    go('admin')
+  }
+
+  /** Owner bed +/- on an API listing. Returns false if the API call failed. */
+  async function handleApiBeds(id: string, availableBeds: number): Promise<boolean> {
+    try {
+      await apiUpdateListing(id, { available_beds: availableBeds })
+      await refreshListings()
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+
+  /** Delete an API listing. Returns false if the API call failed. */
+  async function handleApiDelete(id: string): Promise<boolean> {
+    try {
+      await apiDeleteListing(id)
+      await refreshListings()
+      showToast('Listing delete ho gayi.')
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+
+  /** Super Admin verify / unverify on an API listing. */
+  async function handleApiVerify(id: string, verified: boolean): Promise<boolean> {
+    try {
+      await apiVerifyListing(id, verified)
+      await refreshListings()
+      showToast(verified ? 'Listing verify ho gayi.' : 'Listing unverified kar di gayi.')
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+
+  /** Near Me: browser location se nearest-first sort (approx distance). */
+  function toggleNearMe() {
+    if (nearestFirst) {
+      setNearestFirst(false)
+      setUserLoc(null)
+      return
+    }
+    if (!('geolocation' in navigator)) {
+      showToast('Is browser me location nahi milta — area se dhoondho')
+      return
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setUserLoc({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+        setNearestFirst(true)
+        showToast('Near Me on — nearest PG pehle (approx distance)')
+      },
+      () => showToast('Location nahi mila — permission allow karo ya area se dhoondho'),
+      { timeout: 8000, maximumAge: 60000 },
+    )
+  }
+
   function adminLogout() {
+    clearAdminToken()
     update((d) => { d.adminSession = null; return d })
     setAdminUnlocked(false)
     showToast('Super Admin logout ho gaya.')
   }
 
   function logout() {
+    clearToken()
     update((d) => { d.session = null; return d })
     showToast('Logout ho gaya.')
     go('home')
@@ -184,25 +438,30 @@ export default function App() {
       <main>
         {view === 'home' && (
           <HomeView
-            db={db} city={city} setCity={setCity} locality={locality} setLocality={setLocality}
+            db={viewDb} city={city} setCity={setCity} locality={locality} setLocality={setLocality}
             gender={gender} setGender={setGender} maxRent={maxRent} setMaxRent={setMaxRent}
             query={query} setQuery={setQuery} filtered={filtered} localitiesForCity={localitiesForCity}
             totalBeds={totalBeds} totalProps={totalProps} verifiedCount={verifiedCount}
+            verifiedTab={verifiedTab} setVerifiedTab={setVerifiedTab}
+            userLoc={userLoc} nearestFirst={nearestFirst} onToggleNearMe={toggleNearMe}
+            apiStatus={apiStatus} apiLoading={apiLoading}
             onSelect={setSelected} onList={() => setListOpen(true)} onGo={go}
           />
         )}
         {view === 'bookings' && (
-          <BookingsView db={db} sessionUser={sessionUser} code={bookingCode} setCode={setBookingCode}
+          <BookingsView db={viewDb} sessionUser={sessionUser} code={bookingCode} setCode={setBookingCode}
             phone={bookingPhone} setPhone={setBookingPhone} onSelect={setSelected} onLogout={logout}
             onComplaint={(c) => update((d) => { d.complaints.push(c); return d })} showToast={showToast} />
         )}
         {view === 'owner' && (
-          <OwnerView db={db} sessionUser={sessionUser} update={update} showToast={showToast}
+          <OwnerView db={viewDb} sessionUser={sessionUser} update={update} showToast={showToast}
+            apiIds={apiIds} onApiBeds={handleApiBeds} onApiDelete={handleApiDelete}
             onAuth={() => setAuthOpen({ mode: 'login', portal: 'owner' })} onList={() => setListOpen(true)} onLogout={logout} />
         )}
         {view === 'admin' && (
-          <AdminView db={db} update={update} showToast={showToast} unlocked={adminUnlocked} setUnlocked={setAdminUnlocked}
+          <AdminView db={viewDb} update={update} showToast={showToast} unlocked={adminUnlocked} setUnlocked={setAdminUnlocked}
             adminSessionUser={adminSessionUser} onAdminLogout={adminLogout}
+            apiIds={apiIds} onApiVerify={handleApiVerify} onApiDelete={handleApiDelete}
             onOpenAuth={(portal) => setAuthOpen({ mode: 'login', portal })} />
         )}
       </main>
@@ -218,12 +477,37 @@ export default function App() {
       </nav>
 
       {selected && (
-        <DetailSheet property={selected} db={db} sessionUser={sessionUser}
+        <DetailSheet property={selected} db={viewDb} sessionUser={sessionUser}
           onClose={() => setSelected(null)} showToast={showToast}
-          onEnquiry={(e: Enquiry) => update((d) => { d.enquiries.push(e); return d })}
-          onReview={(propertyId: string, author: string, stars: number, comment: string) => update((d) => {
-            d.reviews.push({ id: uid(), propertyId, author, stars, comment, createdAt: new Date().toISOString() }); return d
-          })} />
+          onEnquiry={async (e: Enquiry) => {
+            // API mode: enquiry backend ko bhi bhejo; local copy tab bhi save
+            // karo taaki My Bookings / Owner portal offline bhi kaam kare.
+            // Server apna code de to wahi dikhao, warna local code.
+            let code = e.code
+            if (apiConfigured()) {
+              try {
+                const res = await createEnquiry({ listing_id: e.propertyId, name: e.tenantName, phone: e.tenantPhone, message: e.message })
+                if (typeof res?.code === 'string' && res.code) code = res.code
+              } catch {
+                // Network fail — local save below still keeps the enquiry.
+              }
+            }
+            const saved = { ...e, code }
+            update((d) => { d.enquiries.push(saved); return d })
+            return code
+          }}
+          onReview={async (propertyId: string, author: string, stars: number, comment: string) => {
+            if (apiConfigured()) {
+              try {
+                await createReview({ listing_id: propertyId, name: author, stars, comment })
+              } catch {
+                // Network fail — local save below still keeps the review.
+              }
+            }
+            update((d) => {
+              d.reviews.push({ id: uid(), propertyId, author, stars, comment, createdAt: new Date().toISOString() }); return d
+            })
+          }} />
       )}
       {authOpen && (
         <AuthHub mode={authOpen.mode} portal={authOpen.portal}
@@ -231,35 +515,32 @@ export default function App() {
           onSwitch={(m, portal) => setAuthOpen({ mode: m, portal })}
           onSubmit={handleAuth}
           adminAccountConfigured={!!db.adminAccount}
-          onAdminLogin={async (username, password) => {
-            const acc = db.adminAccount
-            if (!acc) return showToast('Super Admin account abhi set nahi hai — pehle Admin panel se banao')
-            const lockKey = 'admin:' + username.toLowerCase()
-            const lock = db.failedLogins[lockKey]
-            if (lock && lock.lockUntil > Date.now()) return showToast('5 galat koshish — 15 minute ke liye lock hai.')
-            const h = await hashSecret(password, acc.salt)
-            if (acc.username.toLowerCase() !== username.toLowerCase() || h !== acc.passwordHash) {
-              update((d) => {
-                const cur = d.failedLogins[lockKey] || { count: 0, lockUntil: 0 }
-                cur.count += 1
-                if (cur.count >= 5) { cur.lockUntil = Date.now() + 15 * 60000; cur.count = 0 }
-                d.failedLogins[lockKey] = cur
-                return d
-              })
-              return showToast('Galat Super Admin ID ya password.')
-            }
-            update((d) => { d.failedLogins[lockKey] = { count: 0, lockUntil: 0 }; d.adminSession = { adminId: acc.id, expiresAt: Date.now() + 30 * 86400000 }; return d })
-            setAuthOpen(null)
-            setAdminUnlocked(true)
-            showToast(`Welcome back, Admin ${acc.username}!`)
-            go('admin')
-          }}
+          onAdminLogin={handleAdminLogin}
           onGoAdminSetup={() => { setAuthOpen(null); go('admin') }} />
       )}
       {listOpen && (
         <ListPGWizard db={db} sessionUser={sessionUser} onClose={() => setListOpen(false)}
           showToast={showToast}
-          onCreate={(p: Property) => { update((d) => { d.properties.push(p); return d }); setListOpen(false); showToast('PG list ho gaya — Not Verified se start hoga. Admin verify karega.') }} />
+          onCreate={async (p: Property) => {
+            // API mode + logged-in owner: listing backend par banao. Guest
+            // (bina login) ya network fail par purana local behaviour.
+            if (apiConfigured() && getToken()) {
+              try {
+                await createListing(propertyToApiListing(p))
+                setListOpen(false)
+                showToast('PG list ho gaya — Not Verified se start hoga. Admin verify karega.')
+                await refreshListings()
+                return
+              } catch (err) {
+                if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+                  showToast(err.message)
+                  return // wizard khula rehta hai — user data theek karke retry kare
+                }
+                showToast('Backend se connect nahi hua — listing device par save ho gayi.')
+              }
+            }
+            update((d) => { d.properties.push(p); return d }); setListOpen(false); showToast('PG list ho gaya — Not Verified se start hoga. Admin verify karega.')
+          }} />
       )}
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
@@ -272,9 +553,13 @@ function HomeView(props: {
   gender: 'All' | Gender; setGender: (g: 'All' | Gender) => void; maxRent: number; setMaxRent: (n: number) => void
   query: string; setQuery: (s: string) => void; filtered: Property[]; localitiesForCity: string[]
   totalBeds: number; totalProps: number; verifiedCount: number
+  verifiedTab: VerifiedTab; setVerifiedTab: (t: VerifiedTab) => void
+  userLoc: LatLng | null; nearestFirst: boolean; onToggleNearMe: () => void
+  apiStatus: ApiStatus; apiLoading: boolean
   onSelect: (p: Property) => void; onList: () => void; onGo: (v: View) => void
 }) {
   const { db, filtered } = props
+  const unverifiedCount = props.totalProps - props.verifiedCount
   return (
     <>
       <section className="hero">
@@ -337,7 +622,29 @@ function HomeView(props: {
       <section className="section container" id="listings">
         <h2>{filtered.length ? `${filtered.length} PG mile` : 'Abhi koi PG listed nahi hai'}</h2>
         <p className="muted">Har listing by default <b>Not Verified</b> hoti hai. Admin jaanch ke baad hi <b>Verified</b> badge lagta hai — taaki aapko fake listing na mile.</p>
-        {filtered.length === 0 ? (
+        {props.apiStatus === 'live' && <p className="small muted">Live backend se load ho raha hai.</p>}
+        {props.apiStatus === 'offline' && <p className="small" style={{ color: '#b45309' }}>Offline mode — device par save hua data dikh raha hai.</p>}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 14 }}>
+          <div className="tabs" role="tablist" aria-label="Verified filter" style={{ flex: 1 }}>
+            {([
+              ['All', `Saare (${props.totalProps})`],
+              ['Verified', `Verified (${props.verifiedCount})`],
+              ['Unverified', `Unverified (${unverifiedCount})`],
+            ] as [VerifiedTab, string][]).map(([t, label]) => (
+              <button key={t} role="tab" aria-selected={props.verifiedTab === t}
+                className={props.verifiedTab === t ? 'active' : ''} onClick={() => props.setVerifiedTab(t)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <button className={`chip ${props.nearestFirst ? 'active' : ''}`} onClick={props.onToggleNearMe} aria-pressed={props.nearestFirst}>
+            <Navigation size={14} /> {props.nearestFirst ? 'Near Me: On' : 'Near Me'}
+          </button>
+        </div>
+        {props.nearestFirst && props.userLoc && <p className="small muted" style={{ marginTop: 8 }}>Nearest pehle — distance approx hai (locality ke centre se).</p>}
+        {props.apiLoading && filtered.length === 0 ? (
+          <div className="grid"><div className="skeleton" /><div className="skeleton" /><div className="skeleton" /></div>
+        ) : filtered.length === 0 ? (
           <div className="empty">
             <Building2 size={40} color="#0f4c4c" />
             <h3>Zero fake listings — isiliye yahan abhi kuch nahi dikh raha</h3>
@@ -346,7 +653,7 @@ function HomeView(props: {
           </div>
         ) : (
           <div className="grid">
-            {filtered.map((p, i) => <PropertyCard key={p.id} p={p} db={db} index={i} onSelect={props.onSelect} />)}
+            {filtered.map((p, i) => <PropertyCard key={p.id} p={p} db={db} index={i} userLoc={props.userLoc} onSelect={props.onSelect} />)}
           </div>
         )}
       </section>
@@ -387,10 +694,11 @@ function HomeView(props: {
   )
 }
 
-function PropertyCard({ p, db, index, onSelect }: { p: Property; db: DB; index: number; onSelect: (p: Property) => void }) {
+function PropertyCard({ p, db, index, userLoc, onSelect }: { p: Property; db: DB; index: number; userLoc: LatLng | null; onSelect: (p: Property) => void }) {
   const revs = db.reviews.filter((r) => r.propertyId === p.id)
   const { avg, count } = avgRating(revs)
   const occ = occupancy(p)
+  const dist = userLoc ? approxDistanceKm(userLoc, p.locality, p.city) : null
   return (
     <article className="card" style={{ animationDelay: `${Math.min(index, 6) * 0.07}s` }}>
       <div className="card-cover" onClick={() => onSelect(p)} role="button" tabIndex={0}>
@@ -408,9 +716,14 @@ function PropertyCard({ p, db, index, onSelect }: { p: Property; db: DB; index: 
             : <span className="badge badge-unverified"><ShieldAlert size={13} /> Not Verified</span>}
         </div>
         <p className="muted small" style={{ margin: '2px 0' }}>{p.gender} • {p.sharing} • {p.locality}, {p.city}</p>
+        {dist !== null && <p className="small muted" style={{ margin: '2px 0' }}><Navigation size={12} /> ~{dist} km away (approx)</p>}
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
           <span className="price">{inr(p.rent)}<small> /month</small></span>
-          {count > 0 && <span className="small"><Star size={13} color="#f59e0b" fill="#f59e0b" /> {avg} ({count} review{count > 1 ? 's' : ''})</span>}
+          {count > 0
+            ? <span className="small"><Star size={13} color="#f59e0b" fill="#f59e0b" /> {avg} ({count} review{count > 1 ? 's' : ''})</span>
+            : p.rating !== undefined && p.rating > 0
+              ? <span className="small"><Star size={13} color="#f59e0b" fill="#f59e0b" /> {p.rating}{p.reviewCount !== undefined ? ` (${p.reviewCount} review${p.reviewCount > 1 ? 's' : ''})` : ''}</span>
+              : null}
         </div>
         <div className="occ"><i style={{ width: `${occ}%` }} /></div>
         <span className="small muted">{occ}% occupied • {p.availableBeds} / {p.totalBeds} beds free</span>
@@ -430,8 +743,8 @@ function PropertyCard({ p, db, index, onSelect }: { p: Property; db: DB; index: 
 /* ---------------- Detail sheet: Maps, enquiry, reviews ---------------- */
 function DetailSheet(props: {
   property: Property; db: DB; sessionUser: User | null; onClose: () => void; showToast: (m: string) => void
-  onEnquiry: (e: Enquiry) => void
-  onReview: (propertyId: string, author: string, stars: number, comment: string) => void
+  onEnquiry: (e: Enquiry) => Promise<string>
+  onReview: (propertyId: string, author: string, stars: number, comment: string) => Promise<void> | void
 }) {
   const { property: p, db } = props
   const [name, setName] = useState(props.sessionUser?.name || '')
@@ -453,12 +766,12 @@ function DetailSheet(props: {
     return () => { document.body.style.overflow = prev; window.removeEventListener('keydown', onKey) }
   }, [])
 
-  function sendEnquiry() {
+  async function sendEnquiry() {
     const ph = phone.replace(/\D/g, '').slice(-10)
     if (!name.trim() || ph.length !== 10) return props.showToast('Naam aur sahi 10-digit number daalein')
     const c = enquiryCode()
-    props.onEnquiry({ id: uid(), code: c, propertyId: p.id, propertyName: p.name, tenantName: name.trim(), tenantPhone: ph, message: msg, status: 'New', createdAt: new Date().toISOString() })
-    setCode(c)
+    const finalCode = await props.onEnquiry({ id: uid(), code: c, propertyId: p.id, propertyName: p.name, tenantName: name.trim(), tenantPhone: ph, message: msg, status: 'New', createdAt: new Date().toISOString() })
+    setCode(finalCode)
     props.showToast('Enquiry bhej di gayi! Apna code sambhal ke rakho.')
   }
 
@@ -537,9 +850,9 @@ function DetailSheet(props: {
         </div>
         <label>Apna experience likho</label>
         <textarea value={rComment} onChange={(e) => setRComment(e.target.value)} rows={3} placeholder="Khana kaisa hai? Paani, bijli, warden, safai… sach likho, dusre students ki madad hogi." />
-        <button className="btn" style={{ marginTop: 12 }} onClick={() => {
+        <button className="btn" style={{ marginTop: 12 }} onClick={async () => {
           if (!rName.trim() || !rComment.trim()) return props.showToast('Naam aur comment dono daalein')
-          props.onReview(p.id, rName.trim(), rStars, rComment.trim())
+          await props.onReview(p.id, rName.trim(), rStars, rComment.trim())
           setRComment('')
           props.showToast('Review publish ho gaya — dhanyavaad!')
         }}>Review Publish Karo</button>
@@ -654,7 +967,7 @@ function AuthHub(props: {
 /* ---------------- List PG wizard (4 steps) ---------------- */
 function ListPGWizard(props: {
   db: DB; sessionUser: User | null; onClose: () => void; showToast: (m: string) => void
-  onCreate: (p: Property) => void
+  onCreate: (p: Property) => void | Promise<void>
 }) {
   const [step, setStep] = useState(1)
   const [city, setCity] = useState<City>('Hazaribagh')
@@ -675,13 +988,13 @@ function ListPGWizard(props: {
 
   useEffect(() => { setLocality(LOCALITIES[city][0]) }, [city])
 
-  function submit() {
+  async function submit() {
     const ph = ownerPhone.replace(/\D/g, '').slice(-10)
     const r = Number(rent), d = Number(deposit), tb = Number(totalBeds), av = Number(avail)
     if (!name.trim() || !address.trim()) return props.showToast('PG ka naam aur address daalein')
     if (ph.length !== 10) return props.showToast('Sahi 10-digit WhatsApp number daalein')
     if (!r || !tb || av < 0 || av > tb) return props.showToast('Rent, total beds aur available beds sahi daalein')
-    props.onCreate({
+    await props.onCreate({
       id: uid(), ownerId: props.sessionUser?.id || 'guest', ownerPhone: ph, name: name.trim(), city,
       locality, address: address.trim(), gender, rent: r, deposit: d || 0, foodIncluded: food,
       foodNote: foodNote.trim() || undefined, totalBeds: tb, availableBeds: av, sharing,
@@ -866,6 +1179,8 @@ function BookingsView(props: {
 /* ---------------- Owner Portal (Makan Malik) ---------------- */
 function OwnerView(props: {
   db: DB; sessionUser: User | null; update: (fn: (d: DB) => DB) => void; showToast: (m: string) => void
+  apiIds: Set<string>; onApiBeds: (id: string, availableBeds: number) => Promise<boolean>
+  onApiDelete: (id: string) => Promise<boolean>
   onAuth: () => void; onList: () => void; onLogout: () => void
 }) {
   const { db, sessionUser } = props
@@ -909,6 +1224,27 @@ function OwnerView(props: {
         <div className="empty"><p>Aapka account tenant ka hai. Owner portal ke liye owner account se login karein.</p></div>
       </section>
     )
+  }
+
+  async function adjustBeds(p: Property, delta: number) {
+    const next = p.availableBeds + delta
+    if (next < 0 || next > p.totalBeds) return
+    if (props.apiIds.has(p.id)) {
+      // API listing: PATCH the backend, then reload — local update would
+      // silently no-op because the id does not exist in localStorage.
+      await props.onApiBeds(p.id, next)
+      return
+    }
+    props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) x.availableBeds = next; return d })
+  }
+
+  async function deleteMyListing(p: Property) {
+    if (!confirm(`"${p.name}" delete karna hai?`)) return
+    if (props.apiIds.has(p.id)) {
+      await props.onApiDelete(p.id)
+      return
+    }
+    props.update((d) => { d.properties = d.properties.filter((y) => y.id !== p.id); return d })
   }
 
   async function checkPin() {
@@ -976,10 +1312,10 @@ function OwnerView(props: {
                 <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.name}</b> — {p.locality}, {p.city} {p.verified ? <span className="badge badge-verified"><ShieldCheck size={12} /> Verified</span> : <span className="badge badge-unverified"><ShieldAlert size={12} /> Not Verified</span>}<br />
                   <span className="muted small">{inr(p.rent)}/month • {p.gender} • {p.availableBeds}/{p.totalBeds} beds free</span></div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <button className="btn btn-ghost stepper" aria-label="Bed kam karo" onClick={() => props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x && x.availableBeds > 0) x.availableBeds -= 1; return d })}>−</button>
+                  <button className="btn btn-ghost stepper" aria-label="Bed kam karo" onClick={() => void adjustBeds(p, -1)}>−</button>
                   <b>{p.availableBeds}</b>
-                  <button className="btn btn-ghost stepper" aria-label="Bed badhao" onClick={() => props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x && x.availableBeds < x.totalBeds) x.availableBeds += 1; return d })}>+</button>
-                  <button className="btn btn-danger btn-sm" onClick={() => { if (confirm(`"${p.name}" delete karna hai?`)) props.update((d) => { d.properties = d.properties.filter((y) => y.id !== p.id); return d }) }}>Delete</button>
+                  <button className="btn btn-ghost stepper" aria-label="Bed badhao" onClick={() => void adjustBeds(p, 1)}>+</button>
+                  <button className="btn btn-danger btn-sm" onClick={() => void deleteMyListing(p)}>Delete</button>
                 </div>
               </div>
               <div className="occ"><i style={{ width: `${occupancy(p)}%` }} /></div>
@@ -1084,6 +1420,8 @@ function AdminView(props: {
   unlocked: boolean; setUnlocked: (b: boolean) => void
   adminSessionUser: { id: string; username: string } | null
   onAdminLogout: () => void
+  apiIds: Set<string>; onApiVerify: (id: string, verified: boolean) => Promise<boolean>
+  onApiDelete: (id: string) => Promise<boolean>
   onOpenAuth: (portal: 'user' | 'owner' | 'admin') => void
 }) {
   const { db } = props
@@ -1106,6 +1444,34 @@ function AdminView(props: {
     if (username.length < 4 || !/^[a-z0-9._-]+$/.test(username)) return props.showToast('Super Admin ID kam se kam 4 character ki ho — sirf a-z, 0-9, . _ -')
     if (adminPass.length < 6) return props.showToast('Password kam se kam 6 character ka ho')
     if (adminPass !== adminPass2) return props.showToast('Dono password match nahi kar rahe')
+    // API mode: create the admin on the backend (once only). A 409 means
+    // the server already has an admin — log in instead. Network failure
+    // falls through to the local setup below.
+    if (apiConfigured()) {
+      try {
+        const res = await adminSetup({ admin_id: username, password: adminPass })
+        const token = res.access_token ?? res.token ?? ''
+        if (token) setAdminToken(token)
+        const salt = randomSalt()
+        const passwordHash = await hashSecret(adminPass, salt)
+        const acc = { id: uid(), username, salt, passwordHash, createdAt: new Date().toISOString() }
+        props.update((d) => { d.adminAccount = acc; d.adminSession = { adminId: acc.id, expiresAt: Date.now() + 30 * 86400000 }; return d })
+        props.setUnlocked(true)
+        setAdminPass(''); setAdminPass2('')
+        props.showToast(`Super Admin account ban gaya — ID: ${username}. Ise kisi ko mat batana.`)
+        return
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          props.showToast('Super Admin account pehle se set hai — login karo')
+          return
+        }
+        if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+          props.showToast(err.message)
+          return
+        }
+        // Network / 5xx — fall through to local setup below.
+      }
+    }
     const salt = randomSalt()
     const passwordHash = await hashSecret(adminPass, salt)
     const acc = { id: uid(), username, salt, passwordHash, createdAt: new Date().toISOString() }
@@ -1228,10 +1594,23 @@ function AdminView(props: {
               <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.name}</b> — {p.locality}, {p.city} • {inr(p.rent)} • {p.availableBeds}/{p.totalBeds} beds<br />
                 <span className="muted small">Owner: {p.ownerPhone} • {timeAgo(p.createdAt)}</span></div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button className="btn btn-sm" onClick={() => props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) x.verified = !x.verified; return d })}>
+                <button className="btn btn-sm" onClick={async () => {
+                  if (props.apiIds.has(p.id)) {
+                    await props.onApiVerify(p.id, !p.verified)
+                    return
+                  }
+                  props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) x.verified = !x.verified; return d })
+                }}>
                   {p.verified ? 'Unverify Karo' : 'Verify Karo ✓'}
                 </button>
-                <button className="btn btn-danger btn-sm" onClick={() => { if (confirm(`"${p.name}" delete karna hai?`)) props.update((d) => { d.properties = d.properties.filter((y) => y.id !== p.id); return d }) }}>Delete</button>
+                <button className="btn btn-danger btn-sm" onClick={async () => {
+                  if (!confirm(`"${p.name}" delete karna hai?`)) return
+                  if (props.apiIds.has(p.id)) {
+                    await props.onApiDelete(p.id)
+                    return
+                  }
+                  props.update((d) => { d.properties = d.properties.filter((y) => y.id !== p.id); return d })
+                }}>Delete</button>
               </div>
             </div>
           ))}

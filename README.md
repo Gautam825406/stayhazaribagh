@@ -3,9 +3,11 @@
 PG & hostel finder + management for Hazaribagh & Ranchi.
 
 Free-first, no paid services. Tenant search + owner (Makan Malik) management +
-Super Admin, all in one clean Vite + React + TypeScript app. Data is stored
-locally in the browser (`localStorage`) — this is the GitHub-ready standalone
-version, built fresh from the PRD.
+Super Admin, all in one clean Vite + React + TypeScript app. The frontend
+works standalone with `localStorage`, and connects to the production
+FastAPI + Postgres backend in `backend/` when `VITE_API_URL` is set —
+that is how listings, logins and verifications are shared across all
+users and devices. See **Backend (production)** below.
 
 ## What it does
 
@@ -64,12 +66,100 @@ version, built fresh from the PRD.
   Login/Sign Up buttons always fit inside the viewport. Animations respect
   `prefers-reduced-motion`.
 
-## Data rule — zero fake listings
+## Data — 933 real listings, all Unverified
 
-The app starts with **ZERO listings**. No PG names, phone numbers, rents,
-photos or reviews are invented or scraped. The empty state guides owners to
-List PG. The first real listing appears as soon as a real owner lists it,
-and only becomes Verified after Super Admin checks it.
+The app ships with **933 listings from the user's own spreadsheet**
+(`backend/seed_data.json`: 242 named Google Maps places + 691 OLX ads),
+all **Unverified** (amber Not Verified badge). Nothing is invented:
+where the file says "Not listed", the app shows "Not listed"; OLX
+contacts stay "Via OLX ad". A Super Admin verifies each listing
+(Verify → teal Verified badge) after checking it on the ground.
+Search matches PG/hostel name **and** area name; a **Near Me** button
+shows approx. distance in km and sorts nearest first.
+
+No PG names, phone numbers, rents, photos or reviews are invented or
+scraped beyond this user-supplied file. The empty state guides owners
+to List PG. The first real owner listing appears as soon as a real
+owner lists it, and only becomes Verified after Super Admin checks it.
+
+## Backend (production) — FastAPI + Postgres on Render
+
+`backend/` is a production-level FastAPI backend (see
+`backend/README.md` for the full API reference):
+
+- **Stack:** FastAPI, SQLAlchemy, Postgres (`DATABASE_URL`, SQLite
+  fallback for local dev), JWT auth (30-day sessions), bcrypt password
+  hashing, Pydantic validation.
+- **Tables:** users (tenant/owner), admin_account (single Super Admin),
+  owner_pins (hashed, 5 wrong = 15-min lock), listings, enquiries,
+  reviews, complaints, rent_records.
+- **Auth:** `POST /api/auth/register`, `/api/auth/login`,
+  `/api/auth/admin/setup` (once only — refuses with 409 if an admin
+  already exists; **no preset ID/password**),
+  `/api/auth/admin/login`, plus Owner Portal PIN login.
+- **Listings:** `GET /api/listings` (filters: city, area, type, for,
+  search by name/area, verified/unverified, pagination),
+  `GET /api/listings/{id}`, `POST/PATCH/DELETE /api/listings/{id}`,
+  `POST /api/admin/listings/{id}/verify` (admin only).
+- **More:** enquiries, reviews, complaints, owner-scoped
+  `GET /api/owner/*`, `GET /api/admin/overview`, `GET /api/health`.
+- **Security:** secrets only via env vars (never committed), CORS
+  allow-listed via `CORS_ORIGINS` (default
+  `https://stayhazaribagh.vercel.app`), login lockout stored in DB,
+  passwords/PINs never returned.
+- **Seed:** `python -m backend.seed` loads `backend/seed_data.json`
+  (933 rows, idempotent by seed `id` — re-running inserts 0).
+
+### Run the backend locally
+
+```bash
+cd backend
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env   # fill SECRET_KEY (dev only)
+.venv/bin/python -m backend.seed   # 933 unverified listings
+.venv/bin/uvicorn backend.main:app --reload --port 8001
+# curl http://127.0.0.1:8001/api/health
+# curl "http://127.0.0.1:8001/api/listings?search=Korrah"
+```
+
+### Deploy the backend on Render (free tier)
+
+`render.yaml` in the repo root defines the service + free Postgres DB,
+so Render can deploy it from the repo directly:
+
+1. Render dashboard → **New → Blueprint** → select the
+   `Gautam825406/stayhazaribagh` repo (or **New → Web Service**,
+   same repo, build `pip install -r backend/requirements.txt`,
+   start `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`).
+2. Render creates the web service `stayhazaribagh-api` **and** the
+   free Postgres DB `stayhazaribagh-db` from `render.yaml`.
+3. Env vars (set automatically by the Blueprint, verify them):
+   `SECRET_KEY` (auto-generated), `DATABASE_URL` (from the DB),
+   `CORS_ORIGINS=https://stayhazaribagh.vercel.app`.
+4. Wait for the first deploy to go Live, note the service URL, e.g.
+   `https://stayhazaribagh-api.onrender.com`.
+5. **Seed the production DB** (once): Render dashboard → the service
+   → **Shell** → `python -m backend.seed` (uses the bundled
+   `backend/seed_data.json`). Expect `inserted: 933`.
+6. **Create the Super Admin once:** `POST /api/auth/admin/setup`
+   with your chosen `admin_id` + `password` (curl, or the site's
+   Super Admin setup screen once the frontend points at the API).
+   There is no preset ID/password — you set it.
+7. **Point the frontend at the backend:** in Vercel → project
+   `stayhazaribagh` → Settings → Environment Variables →
+   `VITE_API_URL=https://stayhazaribagh-api.onrender.com` →
+   redeploy. Without this variable the site keeps working in
+   localStorage (offline) mode.
+8. Render free tier sleeps after ~15 min idle — the first request
+   after that takes ~30–60s to wake up. That is normal on free.
+
+### Frontend ↔ backend wiring
+
+`src/lib/api.ts` talks to the API when `VITE_API_URL` is set, and
+falls back to `localStorage` when it is not set or the API is
+unreachable (with an "Offline mode" note). Auth, enquiries, reviews,
+verify/edit/delete go through the API when configured. `.env.example`
+at the repo root holds the `VITE_API_URL` placeholder.
 
 ## Run locally
 
@@ -94,11 +184,14 @@ Output goes to `dist/`.
 1. Push this folder to GitHub (see below).
 2. Go to https://vercel.com → **Add New → Project** → import the repo.
 3. Framework preset: **Vite**. Build command: `npm run build`.
-   Output directory: `dist`. No environment variables needed.
-4. Deploy. Every push to `main` redeploys automatically.
+   Output directory: `dist`.
+4. Environment variable: `VITE_API_URL` = your Render backend URL
+   (e.g. `https://stayhazaribagh-api.onrender.com`). If you skip this,
+   the site runs in localStorage (offline) mode until you add it.
+5. Deploy. Every push to `main` redeploys automatically.
 
-No backend, database or paid service is required — everything runs
-client-side with `localStorage`.
+The backend is deployed separately on Render (see **Backend** above);
+the frontend only needs its URL via `VITE_API_URL`.
 
 ## Push to GitHub
 
@@ -135,5 +228,7 @@ git push -u origin main
 
 - Vite 5 + React 18 + TypeScript (strict)
 - `lucide-react` icons, no other UI framework
-- No backend, no database, no API keys, no paid services
-- Data: `localStorage` key `stayhazaribagh_v1` (per browser/device)
+- Backend: FastAPI + SQLAlchemy + Postgres (Render free tier),
+  JWT + bcrypt auth — see `backend/README.md`
+- Data: API when `VITE_API_URL` is set, else `localStorage` key
+  `stayhazaribagh_v1` (per browser/device, offline fallback)

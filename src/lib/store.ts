@@ -39,6 +39,11 @@ export interface Property {
   mapsQuery?: string // optional free-text for Google Maps
   verified: boolean
   createdAt: string
+  // Optional extras carried from the backend (src/lib/api.ts) — never invented locally.
+  rating?: number // backend average rating, when the API supplies one
+  reviewCount?: number // backend review count, when the API supplies one
+  source?: string
+  mapsUrl?: string
 }
 
 export interface Review {
