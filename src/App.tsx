@@ -480,6 +480,7 @@ export default function App() {
             userLoc={userLoc} nearestFirst={nearestFirst} onToggleNearMe={toggleNearMe}
             apiStatus={apiStatus} apiLoading={apiLoading}
             onSelect={setSelected} onList={() => setListOpen(true)} onGo={go}
+            onClearFilters={() => { setCity('Both'); setLocality('All'); setGender('All'); setMaxRent(8000); setQuery(''); setVerifiedTab('All'); setPage(1) }}
           />
         )}
         {view === 'bookings' && (
@@ -605,11 +606,21 @@ function HomeView(props: {
   userLoc: LatLng | null; nearestFirst: boolean; onToggleNearMe: () => void
   apiStatus: ApiStatus; apiLoading: boolean
   onSelect: (p: Property) => void; onList: () => void; onGo: (v: View) => void
+  onClearFilters: () => void
 }) {
   const { db, filtered } = props
   const unverifiedCount = props.totalProps - props.verifiedCount
   /** Backend still waking up — show "…" instead of a misleading 0. */
   const loadingCounts = props.apiLoading && props.totalProps === 0
+  /** Filters currently applied, in plain words — shown when listings exist but none match. */
+  const activeFilters: string[] = [
+    ...(props.query.trim() ? [`Search: "${props.query.trim()}"`] : []),
+    ...(props.city !== 'Both' ? [`City: ${props.city}`] : []),
+    ...(props.locality !== 'All' ? [`Locality: ${props.locality}`] : []),
+    ...(props.gender !== 'All' ? [`Kaun ke liye: ${props.gender}`] : []),
+    `Max rent: ${inr(props.maxRent)} / month`,
+    ...(props.verifiedTab !== 'All' ? [`Tab: ${props.verifiedTab}`] : []),
+  ]
   const [openFaq, setOpenFaq] = useState<number | null>(null)
   const FAQS: [string, string][] = [
     ['Hazaribagh me PG ka rent kitna hota hai?', 'Rent area, sharing aur khane par depend karta hai. Is site par har PG ka total monthly cost (rent + mess + deposit) saaf dikhaya jata hai — koi chhupa hua charge nahi.'],
@@ -705,12 +716,22 @@ function HomeView(props: {
         </p>
         {props.apiLoading && filtered.length === 0 ? (
           <div className="grid"><div className="skeleton" /><div className="skeleton" /><div className="skeleton" /></div>
-        ) : filtered.length === 0 ? (
+        ) : filtered.length === 0 && props.totalProps === 0 ? (
           <div className="empty">
             <Building2 size={40} color="#0f4c4c" />
             <h3>Zero fake listings — isiliye yahan abhi kuch nahi dikh raha</h3>
             <p className="muted">Humne koi naam, number ya rent invent nahi kiya hai. Pehli real listing aate hi yahan dikhegi.<br />Agar aap makan malik hain, to apna PG free me list karein.</p>
             <button className="btn btn-orange" onClick={props.onList}><Plus size={18} /> Apna PG FREE List Karein</button>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="empty">
+            <Search size={40} color="#0f4c4c" />
+            <h3>Is filter/search se koi PG nahi mila</h3>
+            <p className="muted">Site par {props.totalProps} PG listed hain, par ye filter/search unme se kisi se match nahi karta.</p>
+            <p className="small" style={{ marginTop: 4 }}>
+              Abhi lage hue filters: {activeFilters.join(' • ')}
+            </p>
+            <button className="btn btn-orange" onClick={props.onClearFilters}><X size={18} /> Filters saaf karo</button>
           </div>
         ) : (
           <>
