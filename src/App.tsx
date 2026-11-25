@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   BadgeCheck, BedDouble, BookOpen, Building2, Check, ChevronRight, Crown, Home,
-  KeyRound, LayoutDashboard, LogOut, MapPin, MessageSquare, Navigation, Phone, Plus, Search,
+  KeyRound, LogOut, MapPin, MessageSquare, Navigation, Phone, Plus, Search,
   ShieldCheck, ShieldAlert, Star, UserRound, UtensilsCrossed, Wallet, X,
 } from 'lucide-react'
 import {
@@ -160,15 +160,15 @@ export default function App() {
             {adminSessionUser && (
               <span className="account-chip admin-chip" title="Super Admin logged in">
                 <span className="avatar" style={{ background: '#b45309' }}><Crown size={15} /></span>
-                Admin: {adminSessionUser.username}
-                <button className="btn-ghost btn btn-sm" onClick={adminLogout} aria-label="Super Admin log out"><LogOut size={15} /></button>
+                <span className="account-name">Admin: {adminSessionUser.username}</span>
+                <button className="btn btn-danger btn-sm logout-pill" onClick={adminLogout} aria-label="Super Admin log out"><LogOut size={15} /> Logout</button>
               </span>
             )}
             {sessionUser ? (
               <span className="account-chip">
                 <span className="avatar">{sessionUser.name[0]?.toUpperCase()}</span>
-                {sessionUser.name.split(' ')[0]}
-                <button className="btn-ghost btn btn-sm" onClick={logout} aria-label="Log out"><LogOut size={15} /></button>
+                <span className="account-name">{sessionUser.name.split(' ')[0]}</span>
+                <button className="btn btn-danger btn-sm logout-pill" onClick={logout} aria-label="Log out"><LogOut size={15} /> Logout</button>
               </span>
             ) : (
               <>
@@ -193,12 +193,12 @@ export default function App() {
         )}
         {view === 'bookings' && (
           <BookingsView db={db} sessionUser={sessionUser} code={bookingCode} setCode={setBookingCode}
-            phone={bookingPhone} setPhone={setBookingPhone} onSelect={setSelected}
+            phone={bookingPhone} setPhone={setBookingPhone} onSelect={setSelected} onLogout={logout}
             onComplaint={(c) => update((d) => { d.complaints.push(c); return d })} showToast={showToast} />
         )}
         {view === 'owner' && (
           <OwnerView db={db} sessionUser={sessionUser} update={update} showToast={showToast}
-            onAuth={() => setAuthOpen({ mode: 'login', portal: 'owner' })} onList={() => setListOpen(true)} />
+            onAuth={() => setAuthOpen({ mode: 'login', portal: 'owner' })} onList={() => setListOpen(true)} onLogout={logout} />
         )}
         {view === 'admin' && (
           <AdminView db={db} update={update} showToast={showToast} unlocked={adminUnlocked} setUnlocked={setAdminUnlocked}
@@ -215,7 +215,6 @@ export default function App() {
         <button className={view === 'bookings' ? 'active' : ''} onClick={() => go('bookings')}><span className="bb-icon"><BookOpen size={20} /></span>Bookings</button>
         <button className="bb-fab" onClick={() => setListOpen(true)} aria-label="List PG free"><span><Plus size={26} /></span>List PG</button>
         <button className={view === 'owner' ? 'active' : ''} onClick={() => go('owner')}><span className="bb-icon"><Building2 size={20} /></span>Owner</button>
-        <button className={view === 'admin' ? 'active' : ''} onClick={() => go('admin')}><span className="bb-icon"><LayoutDashboard size={20} /></span>Admin</button>
       </nav>
 
       {selected && (
@@ -568,7 +567,7 @@ function AuthHub(props: {
   const role: Role = portal === 'owner' ? 'owner' : 'tenant'
 
   const portalBtn = (key: 'user' | 'owner' | 'admin', label: string, icon: React.ReactNode) => (
-    <button type="button" key={key} className={portal === key ? 'active' : ''} onClick={() => props.onSwitch(props.mode, key)}>
+    <button type="button" key={key} className={`${portal === key ? 'active' : ''} ${key === 'admin' ? 'portal-admin-btn' : ''}`.trim()} onClick={() => props.onSwitch(props.mode, key)}>
       {icon} {label}
     </button>
   )
@@ -784,7 +783,7 @@ function ListPGWizard(props: {
 /* ---------------- My Bookings (tenant) ---------------- */
 function BookingsView(props: {
   db: DB; sessionUser: User | null; code: string; setCode: (s: string) => void
-  phone: string; setPhone: (s: string) => void; onSelect: (p: Property) => void
+  phone: string; setPhone: (s: string) => void; onSelect: (p: Property) => void; onLogout: () => void
   onComplaint: (c: { id: string; propertyId: string; propertyName: string; tenantName: string; tenantPhone: string; text: string; status: 'Open' | 'In Progress' | 'Resolved'; createdAt: string }) => void
   showToast: (m: string) => void
 }) {
@@ -799,7 +798,12 @@ function BookingsView(props: {
 
   return (
     <section className="section container">
-      <h2>My Bookings</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <h2 style={{ margin: 0 }}>My Bookings</h2>
+        {sessionUser && (
+          <button className="btn btn-danger btn-sm logout-pill" onClick={props.onLogout} aria-label="Log out"><LogOut size={15} /> Logout</button>
+        )}
+      </div>
       <p className="muted">Apni enquiries ka status dekho — login karke, ya enquiry time mile private code se.</p>
       {lookedUp && (
         <div className="stat-tiles">
@@ -862,7 +866,7 @@ function BookingsView(props: {
 /* ---------------- Owner Portal (Makan Malik) ---------------- */
 function OwnerView(props: {
   db: DB; sessionUser: User | null; update: (fn: (d: DB) => DB) => void; showToast: (m: string) => void
-  onAuth: () => void; onList: () => void
+  onAuth: () => void; onList: () => void; onLogout: () => void
 }) {
   const { db, sessionUser } = props
   const [tab, setTab] = useState<'PGs' | 'Enquiries' | 'Tenants' | 'Rent & Dues' | 'Complaints'>('PGs')
@@ -924,6 +928,9 @@ function OwnerView(props: {
   return (
     <section className="section container">
       <h2>Namaste, {sessionUser.name} ji — Makan Malik Portal</h2>
+      <div className="owner-logout-row">
+        <button className="btn btn-danger logout-pill logout-full" onClick={props.onLogout} aria-label="Log out"><LogOut size={15} /> Logout</button>
+      </div>
       <p className="muted">Sirf aapke PGs — {myProps.length} PG • {totalBeds} beds • {availBeds} khali</p>
 
       {!sessionUser.pinHash ? (
@@ -1194,8 +1201,8 @@ function AdminView(props: {
           {props.adminSessionUser && (
             <span className="account-chip admin-chip" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}>
               <span className="avatar" style={{ background: '#b45309' }}><Crown size={15} /></span>
-              Admin: {props.adminSessionUser.username}
-              <button className="btn-ghost btn btn-sm" onClick={props.onAdminLogout} aria-label="Super Admin log out"><LogOut size={15} /></button>
+              <span className="account-name">Admin: {props.adminSessionUser.username}</span>
+              <button className="btn btn-danger btn-sm logout-pill" onClick={props.onAdminLogout} aria-label="Super Admin log out"><LogOut size={15} /> Logout</button>
             </span>
           )}
         </div>
@@ -1271,7 +1278,7 @@ function SiteFooter({ onGo }: { onGo: (v: View) => void }) {
           <button className="btn btn-ghost btn-sm" onClick={() => onGo('home')}>Home</button>
           <button className="btn btn-ghost btn-sm" onClick={() => onGo('bookings')}>My Bookings</button>
           <button className="btn btn-ghost btn-sm" onClick={() => onGo('owner')}>Owner Portal</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => onGo('admin')}>Super Admin</button>
+          <button className="btn btn-ghost btn-sm footer-admin-link" onClick={() => onGo('admin')}>Super Admin</button>
         </div>
         <p className="small" style={{ marginTop: 24 }}>StayHazaribagh — Free listing, free search. Listings by default Not Verified hoti hain; Super Admin verify karta hai. Reviews sirf is site par likhe gaye hain.</p>
         <p className="small">Hazaribagh • Ranchi — Jharkhand, India</p>

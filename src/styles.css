@@ -23,6 +23,11 @@ label{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}
 .btn-orange{background:linear-gradient(135deg,var(--orange),var(--orange-2));color:#fff}
 .btn-ghost{background:#fff;color:var(--teal);border:1.5px solid var(--line)}
 .btn-danger{background:#fff;color:var(--red);border:1.5px solid #f0c6c2}
+.logout-pill{background:var(--red);color:#fff;border:0;white-space:nowrap;flex-shrink:0}
+.logout-pill:hover{background:#8f1d17}
+.account-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px}
+.owner-logout-row{display:flex;margin:12px 0 4px}
+.owner-logout-row .logout-full{justify-content:center}
 .btn-sm{padding:9px 14px;min-height:40px;font-size:14px}
 .chip{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;border:1.5px solid var(--line);background:#fff;font-size:13px;font-weight:600;min-height:36px}
 .chip.active{background:var(--teal);color:#fff;border-color:var(--teal)}
@@ -39,7 +44,7 @@ label{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}
 .trust-strip span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .topbar{position:sticky;top:0;z-index:40;background:rgba(255,253,247,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
 .topbar-inner{display:flex;align-items:center;gap:12px;padding:12px 0;min-width:0}
-.header-actions{margin-left:auto;flex-shrink:0}
+.header-actions{margin-left:auto;flex-shrink:0;min-width:0}
 .brand{display:flex;align-items:center;gap:11px;text-decoration:none;color:var(--ink);flex-shrink:0}
 .brand-mark{width:46px;height:46px;border-radius:13px;background:linear-gradient(135deg,var(--teal),var(--teal-2));display:grid;place-items:center;color:#fff;position:relative;box-shadow:var(--shadow-sm)}
 .brand-mark b{font-family:Fraunces,serif;font-size:24px}
@@ -48,7 +53,7 @@ label{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}
 .brand-name em{font-style:normal;color:var(--orange-2)}
 .brand-sub{font-size:11.5px;color:var(--muted);margin-top:3px;letter-spacing:.02em}
 .header-actions{display:flex;gap:10px;align-items:center}
-.account-chip{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1.5px solid var(--line);border-radius:999px;padding:6px 12px 6px 6px;font-weight:700;font-size:14px;white-space:nowrap;max-width:100%}
+.account-chip{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1.5px solid var(--line);border-radius:999px;padding:6px 6px 6px 6px;font-weight:700;font-size:14px;white-space:nowrap;max-width:100%;flex-shrink:1;min-width:0}
 .admin-chip{background:#fef3c7;border-color:#f0d9a0}
 .avatar{width:32px;height:32px;border-radius:50%;background:var(--teal);color:#fff;display:grid;place-items:center;font-size:14px}
 .brand-line{height:3px;background:linear-gradient(90deg,var(--teal),var(--orange))}
@@ -164,6 +169,14 @@ footer h3{color:#fff}
 .bb-fab span{width:52px;height:52px;margin-top:-26px;border-radius:50%;background:linear-gradient(135deg,var(--orange),var(--orange-2));color:#fff;display:grid;place-items:center;box-shadow:0 8px 20px rgba(245,158,11,.45);border:3px solid var(--paper)}
 @media(min-width:768px){.bottom-bar{display:none}}
 @media(max-width:767px){
+  /* Mobile responsive is ONLY for User (tenant) and Makan Malik (owner) — NOT Super Admin.
+     Phones show only the User + PG Admin entrances; the footer Super Admin link is desktop-only. */
+  .portal-admin-btn{display:none !important}
+  .footer-admin-link{display:none !important}
+  /* Logout must never be pushed off-screen: hide the (non-essential) account name, keep the labelled pill */
+  .account-name{display:none}
+  .logout-pill{padding:9px 14px;font-size:13px;min-height:40px}
+  .owner-logout-row .logout-full{width:100%}
   /* Form controls 16px on phones only — stops iOS auto-zoom on focus */
   input,select,textarea{font-size:16px}
   .topbar-inner{gap:8px;padding:10px 0}
@@ -190,7 +203,13 @@ footer h3{color:#fff}
   /* Header List PG button lives in the bottom tab bar (FAB) on small phones */
   .header-actions .btn-orange{display:none}
   .brand-name{font-size:16px}
+  .brand-mark{width:34px;height:34px}
   .account-chip{font-size:12px}
+}
+@media(max-width:380px){
+  .brand-name{font-size:15px}
+  .brand-mark{width:32px;height:32px;border-radius:10px}
+  .header-actions .btn{padding:8px 10px;font-size:12px}
 }
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}

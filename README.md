@@ -46,12 +46,19 @@ version, built fresh from the PRD.
   rent FAQs, popular-searches footer, semantic headings, Hinglish copy.
 - **Header (clean)** — no desktop pill nav. Header shows only the
   StayHazaribagh brand, List PG FREE button and Login / Sign Up (or the
-  account / admin chip). Home, My Bookings, Owner and Admin stay reachable
-  via footer links, the mobile bottom tab bar, and the logo (= Home).
-- **Mobile 100% responsive, Android-app feel** — fixed bottom tab bar on
-  mobile only (Home, Bookings, raised List PG button, Owner, Admin), sticky
-  header pinned on top, slim app bar, full-width city toggle, 44px touch
-  targets, no horizontal overflow, safe-area padding. Form controls are
+  account / admin chip). Home, My Bookings and Owner stay reachable
+  via footer links, the mobile bottom tab bar, and the logo (= Home);
+  Super Admin is desktop-only (footer link on desktop).
+- **Mobile 100% responsive, Android-app feel — User (tenant) + Makan Malik
+  (owner) only, NOT Super Admin** — fixed bottom tab bar on
+  mobile only (Home, Bookings, raised List PG button, Owner — no Admin tab),
+  sticky header pinned on top, slim app bar, full-width city toggle, 44px touch
+  targets, no horizontal overflow, safe-area padding. The login hub on
+  phones shows only the User and PG Admin entrances and the footer
+  Super Admin link is desktop-only; the Super Admin console stays
+  desktop-first. Logout is a labelled red pill in the header (never clipped
+  off-screen), plus a full-width Logout row in the Owner Portal and a
+  Logout button in My Bookings. Form controls are
   16px on phones (stops iOS auto-zoom on focus); the PG detail sheet locks
   body scroll, closes on backdrop tap or Escape, and has a grab handle.
   Login/Sign Up buttons always fit inside the viewport. Animations respect
