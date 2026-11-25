@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  BadgeCheck, BedDouble, BookOpen, Building2, Check, ChevronRight, Home,
-  LayoutDashboard, LogOut, MapPin, MessageSquare, Navigation, Phone, Plus, Search,
-  ShieldCheck, ShieldAlert, Star, UtensilsCrossed, Wallet, X,
+  BadgeCheck, BedDouble, BookOpen, Building2, Check, ChevronRight, Crown, Home,
+  KeyRound, LayoutDashboard, LogOut, MapPin, MessageSquare, Navigation, Phone, Plus, Search,
+  ShieldCheck, ShieldAlert, Star, UserRound, UtensilsCrossed, Wallet, X,
 } from 'lucide-react'
 import {
   ALL_LOCALITIES, LOCALITIES, avgRating, enquiryCode, hashSecret, inr, loadDB,
@@ -42,7 +42,7 @@ export default function App() {
   const [maxRent, setMaxRent] = useState(8000)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<Property | null>(null)
-  const [authOpen, setAuthOpen] = useState<null | 'login' | 'signup'>(null)
+  const [authOpen, setAuthOpen] = useState<null | { mode: 'login' | 'signup'; portal: 'user' | 'owner' | 'admin' }>(null)
   const [listOpen, setListOpen] = useState(false)
   const [toast, setToast] = useState('')
   const [adminUnlocked, setAdminUnlocked] = useState(false)
@@ -52,6 +52,11 @@ export default function App() {
   useEffect(() => { saveDB(db) }, [db])
   useEffect(() => { if (toast) { const t = setTimeout(() => setToast(''), 3500); return () => clearTimeout(t) } }, [toast])
   useEffect(() => { window.scrollTo({ top: 0 }) }, [view])
+
+  const adminSessionUser = useMemo(() => {
+    if (!db.adminSession || db.adminSession.expiresAt < Date.now() || !db.adminAccount) return null
+    return db.adminAccount.id === db.adminSession.adminId ? db.adminAccount : null
+  }, [db])
 
   const sessionUser: User | null = useMemo(() => {
     if (!db.session || db.session.expiresAt < Date.now()) return null
@@ -116,6 +121,12 @@ export default function App() {
     }
   }
 
+  function adminLogout() {
+    update((d) => { d.adminSession = null; return d })
+    setAdminUnlocked(false)
+    showToast('Super Admin logout ho gaya.')
+  }
+
   function logout() {
     update((d) => { d.session = null; return d })
     showToast('Logout ho gaya.')
@@ -144,13 +155,15 @@ export default function App() {
               <span className="brand-sub" style={{ display: 'block' }}>Hazaribagh • Ranchi — Jharkhand</span>
             </span>
           </a>
-          <nav className="nav-pills" aria-label="Main">
-            {([['home', 'Home'], ['bookings', 'My Bookings'], ['owner', 'Owner'], ['admin', 'Admin']] as [View, string][]).map(([v, label]) => (
-              <button key={v} className={view === v ? 'active' : ''} onClick={() => go(v)} aria-current={view === v ? 'page' : undefined}>{label}</button>
-            ))}
-          </nav>
           <div className="header-actions">
             <button className="btn btn-orange" onClick={() => setListOpen(true)}><Plus size={18} /> List PG FREE</button>
+            {adminSessionUser && (
+              <span className="account-chip admin-chip" title="Super Admin logged in">
+                <span className="avatar" style={{ background: '#b45309' }}><Crown size={15} /></span>
+                Admin: {adminSessionUser.username}
+                <button className="btn-ghost btn btn-sm" onClick={adminLogout} aria-label="Super Admin log out"><LogOut size={15} /></button>
+              </span>
+            )}
             {sessionUser ? (
               <span className="account-chip">
                 <span className="avatar">{sessionUser.name[0]?.toUpperCase()}</span>
@@ -159,8 +172,8 @@ export default function App() {
               </span>
             ) : (
               <>
-                <button className="btn btn-ghost" onClick={() => setAuthOpen('login')}>Login</button>
-                <button className="btn" onClick={() => setAuthOpen('signup')}>Sign Up</button>
+                <button className="btn btn-ghost" onClick={() => setAuthOpen({ mode: 'login', portal: 'user' })}>Login</button>
+                <button className="btn" onClick={() => setAuthOpen({ mode: 'signup', portal: 'user' })}>Sign Up</button>
               </>
             )}
           </div>
@@ -185,10 +198,12 @@ export default function App() {
         )}
         {view === 'owner' && (
           <OwnerView db={db} sessionUser={sessionUser} update={update} showToast={showToast}
-            onAuth={() => setAuthOpen('login')} onList={() => setListOpen(true)} />
+            onAuth={() => setAuthOpen({ mode: 'login', portal: 'owner' })} onList={() => setListOpen(true)} />
         )}
         {view === 'admin' && (
-          <AdminView db={db} update={update} showToast={showToast} unlocked={adminUnlocked} setUnlocked={setAdminUnlocked} />
+          <AdminView db={db} update={update} showToast={showToast} unlocked={adminUnlocked} setUnlocked={setAdminUnlocked}
+            adminSessionUser={adminSessionUser} onAdminLogout={adminLogout}
+            onOpenAuth={(portal) => setAuthOpen({ mode: 'login', portal })} />
         )}
       </main>
 
@@ -212,8 +227,35 @@ export default function App() {
           })} />
       )}
       {authOpen && (
-        <AuthModal mode={authOpen} onClose={() => setAuthOpen(null)}
-          onSwitch={(m) => setAuthOpen(m)} onSubmit={handleAuth} />
+        <AuthHub mode={authOpen.mode} portal={authOpen.portal}
+          onClose={() => setAuthOpen(null)}
+          onSwitch={(m, portal) => setAuthOpen({ mode: m, portal })}
+          onSubmit={handleAuth}
+          adminAccountConfigured={!!db.adminAccount}
+          onAdminLogin={async (username, password) => {
+            const acc = db.adminAccount
+            if (!acc) return showToast('Super Admin account abhi set nahi hai — pehle Admin panel se banao')
+            const lockKey = 'admin:' + username.toLowerCase()
+            const lock = db.failedLogins[lockKey]
+            if (lock && lock.lockUntil > Date.now()) return showToast('5 galat koshish — 15 minute ke liye lock hai.')
+            const h = await hashSecret(password, acc.salt)
+            if (acc.username.toLowerCase() !== username.toLowerCase() || h !== acc.passwordHash) {
+              update((d) => {
+                const cur = d.failedLogins[lockKey] || { count: 0, lockUntil: 0 }
+                cur.count += 1
+                if (cur.count >= 5) { cur.lockUntil = Date.now() + 15 * 60000; cur.count = 0 }
+                d.failedLogins[lockKey] = cur
+                return d
+              })
+              return showToast('Galat Super Admin ID ya password.')
+            }
+            update((d) => { d.failedLogins[lockKey] = { count: 0, lockUntil: 0 }; d.adminSession = { adminId: acc.id, expiresAt: Date.now() + 30 * 86400000 }; return d })
+            setAuthOpen(null)
+            setAdminUnlocked(true)
+            showToast(`Welcome back, Admin ${acc.username}!`)
+            go('admin')
+          }}
+          onGoAdminSetup={() => { setAuthOpen(null); go('admin') }} />
       )}
       {listOpen && (
         <ListPGWizard db={db} sessionUser={sessionUser} onClose={() => setListOpen(false)}
@@ -403,6 +445,15 @@ function DetailSheet(props: {
   const revs = db.reviews.filter((r) => r.propertyId === p.id)
   const { avg, count } = avgRating(revs)
 
+  // Mobile UI: sheet khulte hi peeche ka page scroll lock ho, Escape/backdrop se band ho.
+  useEffect(() => {
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => { document.body.style.overflow = prev; window.removeEventListener('keydown', onKey) }
+  }, [])
+
   function sendEnquiry() {
     const ph = phone.replace(/\D/g, '').slice(-10)
     if (!name.trim() || ph.length !== 10) return props.showToast('Naam aur sahi 10-digit number daalein')
@@ -415,6 +466,7 @@ function DetailSheet(props: {
   return (
     <div className="overlay" onClick={props.onClose}>
       <div className="sheet" onClick={(e) => e.stopPropagation()} role="dialog" aria-label={p.name}>
+        <div className="grab-handle" aria-hidden="true" />
         <div className="sheet-head">
           <div>
             <h2 style={{ margin: 0 }}>{p.name}</h2>
@@ -497,55 +549,104 @@ function DetailSheet(props: {
   )
 }
 
-/* ---------------- Auth ---------------- */
-function AuthModal(props: {
-  mode: 'login' | 'signup'; onClose: () => void; onSwitch: (m: 'login' | 'signup') => void
+/* ---------------- Login / Signup hub: User • PG Admin • Super Admin ---------------- */
+function AuthHub(props: {
+  mode: 'login' | 'signup'; portal: 'user' | 'owner' | 'admin'
+  onClose: () => void; onSwitch: (m: 'login' | 'signup', portal: 'user' | 'owner' | 'admin') => void
   onSubmit: (mode: 'login' | 'signup', d: { name: string; phone: string; email: string; password: string; role: Role }) => void
+  adminAccountConfigured: boolean
+  onAdminLogin: (username: string, password: string) => void
+  onGoAdminSetup: () => void
 }) {
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [role, setRole] = useState<Role>('tenant')
+  const [adminId, setAdminId] = useState('')
   const [busy, setBusy] = useState(false)
+  const portal = props.portal
+  const role: Role = portal === 'owner' ? 'owner' : 'tenant'
+
+  const portalBtn = (key: 'user' | 'owner' | 'admin', label: string, icon: React.ReactNode) => (
+    <button type="button" key={key} className={portal === key ? 'active' : ''} onClick={() => props.onSwitch(props.mode, key)}>
+      {icon} {label}
+    </button>
+  )
+
   return (
     <div className="overlay" onClick={props.onClose}>
-      <div className="sheet" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()} role="dialog" aria-label={props.mode === 'login' ? 'Login' : 'Sign Up'}>
+      <div className="sheet auth-sheet" style={{ maxWidth: 500 }} onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Login ya Sign Up">
+        <div className="grab-handle" aria-hidden="true" />
         <div className="sheet-head">
-          <h2 style={{ margin: 0 }}>{props.mode === 'login' ? 'Login karo' : 'Free account banao'}</h2>
+          <h2 style={{ margin: 0 }}>{portal === 'admin' ? 'Super Admin Login' : props.mode === 'login' ? 'Login karo' : 'Free account banao'}</h2>
           <button className="close-btn" onClick={props.onClose} aria-label="Close"><X size={18} /></button>
         </div>
-        <p className="muted small">Password sirf salted hash ke roop me save hota hai — plain text me kabhi nahi. Session 30 din tak rahega.</p>
-        {props.mode === 'signup' && (
+
+        {/* Three clear entrances */}
+        <label>Main kaun hoon?</label>
+        <div className="portal-switch" role="group" aria-label="Aap kaun hain">
+          {portalBtn('user', 'User', <UserRound size={15} />)}
+          {portalBtn('owner', 'PG Admin', <Building2 size={15} />)}
+          {portalBtn('admin', 'Super Admin', <Crown size={15} />)}
+        </div>
+
+        {portal === 'admin' ? (
           <>
-            <label>Main kaun hoon?</label>
-            <div className="segmented">
-              <button type="button" className={role === 'tenant' ? 'active' : ''} onClick={() => setRole('tenant')}>PG Dhoondhna Hai</button>
-              <button type="button" className={role === 'owner' ? 'active' : ''} onClick={() => setRole('owner')}>Main PG Owner Hoon</button>
+            <p className="muted small">Super Admin ka account pehli baar <b>Admin panel se</b> banaya jata hai — yahan public signup nahi hai, taaki koi aur aapka admin account claim na kar sake. Password sirf salted hash ke roop me save hota hai, session 30 din tak rahega.</p>
+            {!props.adminAccountConfigured ? (
+              <div className="panel" style={{ background: '#fef3c7' }}>
+                <b>Super Admin account abhi set nahi hai</b>
+                <p className="small" style={{ margin: '6px 0 0' }}>Pehle Admin panel kholo aur apni Super Admin ID + password banao. Uske baad yahin se login hoga.</p>
+                <button className="btn btn-orange" style={{ marginTop: 12 }} onClick={props.onGoAdminSetup}>Admin Panel Kholo — Account Set Karo</button>
+              </div>
+            ) : (
+              <>
+                <label>Super Admin ID</label>
+                <input value={adminId} onChange={(e) => setAdminId(e.target.value)} placeholder="Jaise — gautam-admin" autoCapitalize="none" autoCorrect="off" />
+                <label>Password</label>
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Super Admin password" />
+                <button className="btn btn-orange" style={{ width: '100%', justifyContent: 'center', marginTop: 18 }} disabled={busy}
+                  onClick={async () => { setBusy(true); await props.onAdminLogin(adminId.trim(), password); setBusy(false) }}>
+                  {busy ? 'Ruko…' : 'Super Admin Login Karo'}
+                </button>
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            <p className="muted small">{portal === 'owner' ? 'Makan Malik — apne PGs, tenants, rent aur enquiries manage karo.' : 'Tenant — apni enquiries, bookings aur complaints dekho.'} Password sirf salted hash ke roop me save hota hai — plain text me kabhi nahi. Session 30 din tak rahega.</p>
+            <div className="segmented" role="group" aria-label="Login ya Sign Up">
+              <button type="button" className={props.mode === 'login' ? 'active' : ''} onClick={() => props.onSwitch('login', portal)}>Login</button>
+              <button type="button" className={props.mode === 'signup' ? 'active' : ''} onClick={() => props.onSwitch('signup', portal)}>Sign Up</button>
             </div>
-            <label>Apna naam</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jaise — Gautam Keshri" />
+            {props.mode === 'signup' && (
+              <>
+                <div style={{ marginTop: 14 }}><span className="chip active">{portal === 'owner' ? 'Main PG Owner Hoon' : 'PG Dhoondhna Hai'}</span></div>
+                <label>Apna naam</label>
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jaise — Gautam Keshri" />
+              </>
+            )}
+            <label>WhatsApp number</label>
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="10-digit number" inputMode="tel" />
+            {props.mode === 'signup' && (
+              <>
+                <label>Email (optional)</label>
+                <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="aap@example.com" inputMode="email" />
+              </>
+            )}
+            <label>Password</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Kam se kam 4 character" />
+            <button className="btn btn-orange" style={{ width: '100%', justifyContent: 'center', marginTop: 18 }} disabled={busy}
+              onClick={async () => { setBusy(true); await props.onSubmit(props.mode, { name, phone, email, password, role }); setBusy(false) }}>
+              {busy ? 'Ruko…' : props.mode === 'login' ? 'Login Karo' : 'Account Banao — Free'}
+            </button>
+            <p style={{ textAlign: 'center' }}>
+              <button className="btn-ghost btn btn-sm" onClick={() => props.onSwitch(props.mode === 'login' ? 'signup' : 'login', portal)}>
+                {props.mode === 'login' ? 'Naya account banao — Sign Up' : 'Pehle se account hai? Login karo'}
+              </button>
+            </p>
           </>
         )}
-        <label>WhatsApp number</label>
-        <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="10-digit number" inputMode="tel" />
-        {props.mode === 'signup' && (
-          <>
-            <label>Email (optional)</label>
-            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="aap@example.com" inputMode="email" />
-          </>
-        )}
-        <label>Password</label>
-        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Kam se kam 4 character" />
-        <button className="btn btn-orange" style={{ width: '100%', justifyContent: 'center', marginTop: 18 }} disabled={busy}
-          onClick={async () => { setBusy(true); await props.onSubmit(props.mode, { name, phone, email, password, role }); setBusy(false) }}>
-          {busy ? 'Ruko…' : props.mode === 'login' ? 'Login Karo' : 'Account Banao — Free'}
-        </button>
-        <p style={{ textAlign: 'center' }}>
-          <button className="btn-ghost btn btn-sm" onClick={() => props.onSwitch(props.mode === 'login' ? 'signup' : 'login')}>
-            {props.mode === 'login' ? 'Naya account banao — Sign Up' : 'Pehle se account hai? Login karo'}
-          </button>
-        </p>
       </div>
     </div>
   )
@@ -700,6 +801,14 @@ function BookingsView(props: {
     <section className="section container">
       <h2>My Bookings</h2>
       <p className="muted">Apni enquiries ka status dekho — login karke, ya enquiry time mile private code se.</p>
+      {lookedUp && (
+        <div className="stat-tiles">
+          <div className="tile"><b>{myEnquiries.length}</b><span>Total enquiries</span></div>
+          <div className="tile"><b>{myEnquiries.filter((e) => e.status === 'Booked').length}</b><span>Booked</span></div>
+          <div className="tile"><b>{myEnquiries.filter((e) => e.status === 'Contacted' || e.status === 'Visit Scheduled').length}</b><span>In progress</span></div>
+          <div className="tile"><b>{myComplaints.filter((c) => c.status === 'Open').length}</b><span>Open complaints</span></div>
+        </div>
+      )}
       {!sessionUser && (
         <div className="panel">
           <h3 style={{ marginTop: 0 }}>Enquiry code se status dekho</h3>
@@ -857,12 +966,12 @@ function OwnerView(props: {
           {myProps.map((p) => (
             <div className="panel" key={p.id}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                <div><b>{p.name}</b> — {p.locality}, {p.city} {p.verified ? <span className="badge badge-verified"><ShieldCheck size={12} /> Verified</span> : <span className="badge badge-unverified"><ShieldAlert size={12} /> Not Verified</span>}<br />
+                <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.name}</b> — {p.locality}, {p.city} {p.verified ? <span className="badge badge-verified"><ShieldCheck size={12} /> Verified</span> : <span className="badge badge-unverified"><ShieldAlert size={12} /> Not Verified</span>}<br />
                   <span className="muted small">{inr(p.rent)}/month • {p.gender} • {p.availableBeds}/{p.totalBeds} beds free</span></div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <button className="btn btn-ghost btn-sm" onClick={() => props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x && x.availableBeds > 0) x.availableBeds -= 1; return d })}>Bed −</button>
+                  <button className="btn btn-ghost stepper" aria-label="Bed kam karo" onClick={() => props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x && x.availableBeds > 0) x.availableBeds -= 1; return d })}>−</button>
                   <b>{p.availableBeds}</b>
-                  <button className="btn btn-ghost btn-sm" onClick={() => props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x && x.availableBeds < x.totalBeds) x.availableBeds += 1; return d })}>Bed +</button>
+                  <button className="btn btn-ghost stepper" aria-label="Bed badhao" onClick={() => props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x && x.availableBeds < x.totalBeds) x.availableBeds += 1; return d })}>+</button>
                   <button className="btn btn-danger btn-sm" onClick={() => { if (confirm(`"${p.name}" delete karna hai?`)) props.update((d) => { d.properties = d.properties.filter((y) => y.id !== p.id); return d }) }}>Delete</button>
                 </div>
               </div>
@@ -894,7 +1003,7 @@ function OwnerView(props: {
       {tab === 'Tenants' && (
         <div className="panel">
           <h3 style={{ marginTop: 0 }}>Tenant add karo</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div className="form-grid-2">
             <select value={tProp} onChange={(e) => setTProp(e.target.value)}>
               <option value="">— PG chuno —</option>
               {myProps.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -914,13 +1023,15 @@ function OwnerView(props: {
             setTName(''); setTPhone(''); setTRoom('')
             props.showToast('Tenant add ho gaya — bed count update ho gaya.')
           }}>Tenant Add Karo</button>
-          <table className="table" style={{ marginTop: 14 }}>
+          <div className="table-wrap" style={{ marginTop: 14 }}>
+          <table className="table">
             <thead><tr><th>Tenant</th><th>Room</th><th>Rent</th><th>KYC</th></tr></thead>
             <tbody>{myTenants.map((t) => (
               <tr key={t.id}><td>{t.name}<br /><span className="muted small">{t.phone}</span></td><td>{t.room}</td><td>{inr(t.rent)}</td>
                 <td><button className="chip" onClick={() => props.update((d) => { const x = d.tenants.find((y) => y.id === t.id); if (x) x.kycDone = !x.kycDone; return d })}>{t.kycDone ? '✓ Done' : 'Pending'}</button></td></tr>
             ))}</tbody>
           </table>
+          </div>
           {myTenants.length === 0 && <p className="muted">Abhi koi tenant add nahi hai.</p>}
         </div>
       )}
@@ -964,16 +1075,38 @@ function OwnerView(props: {
 function AdminView(props: {
   db: DB; update: (fn: (d: DB) => DB) => void; showToast: (m: string) => void
   unlocked: boolean; setUnlocked: (b: boolean) => void
+  adminSessionUser: { id: string; username: string } | null
+  onAdminLogout: () => void
+  onOpenAuth: (portal: 'user' | 'owner' | 'admin') => void
 }) {
   const { db } = props
   const [pass, setPass] = useState('')
   const [newPass, setNewPass] = useState('')
   const [newOwnerPin, setNewOwnerPin] = useState('')
   const [pinOwnerPhone, setPinOwnerPhone] = useState('')
+  const [adminId, setAdminId] = useState('')
+  const [adminPass, setAdminPass] = useState('')
+  const [adminPass2, setAdminPass2] = useState('')
 
   const hzb = db.properties.filter((p) => p.city === 'Hazaribagh')
   const rnc = db.properties.filter((p) => p.city === 'Ranchi')
   const owners = db.users.filter((u) => u.role === 'owner')
+  const isAdminIn = !!props.adminSessionUser || props.unlocked
+
+  async function setupAdminAccount() {
+    if (db.adminAccount) return props.showToast('Super Admin account pehle se set hai — login karo')
+    const username = adminId.trim().toLowerCase()
+    if (username.length < 4 || !/^[a-z0-9._-]+$/.test(username)) return props.showToast('Super Admin ID kam se kam 4 character ki ho — sirf a-z, 0-9, . _ -')
+    if (adminPass.length < 6) return props.showToast('Password kam se kam 6 character ka ho')
+    if (adminPass !== adminPass2) return props.showToast('Dono password match nahi kar rahe')
+    const salt = randomSalt()
+    const passwordHash = await hashSecret(adminPass, salt)
+    const acc = { id: uid(), username, salt, passwordHash, createdAt: new Date().toISOString() }
+    props.update((d) => { d.adminAccount = acc; d.adminSession = { adminId: acc.id, expiresAt: Date.now() + 30 * 86400000 }; return d })
+    props.setUnlocked(true)
+    setAdminPass(''); setAdminPass2('')
+    props.showToast(`Super Admin account ban gaya — ID: ${username}. Ise kisi ko mat batana.`)
+  }
 
   async function setPasscode() {
     if (newPass.length < 4) return props.showToast('Passcode kam se kam 4 character ka ho')
@@ -1000,33 +1133,54 @@ function AdminView(props: {
     props.showToast(`Owner PIN set/reset ho gaya (${ph})`)
   }
 
-  if (!db.settings.adminPasscodeHash) {
+  // Step 1 — no admin account yet: owner creates the Super Admin ID + password ONCE here.
+  if (!db.adminAccount && !db.settings.adminPasscodeHash) {
     return (
       <section className="section container">
         <h2>Super Admin Panel</h2>
         <div className="empty">
           <ShieldCheck size={40} color="#0f4c4c" />
-          <h3>Pehli baar? Apna staff passcode set karo</h3>
-          <p className="muted">Ye passcode sirf aap (site owner) ke liye hai. Isi se Super Admin khulega. Kisi ko mat batana — passcode hashed save hota hai.</p>
+          <h3>Pehli baar? Apni Super Admin ID + password banao</h3>
+          <p className="muted">Ye account sirf aap (site owner) ke liye hai — ek baar ban gaya to koi aur ise claim nahi kar sakta. Iske baad kisi bhi browser se isi ID + password se login hoga. Password sirf salted hash ke roop me save hota hai — koi preset ID/password nahi hai.</p>
+          <div style={{ maxWidth: 420, margin: '0 auto', textAlign: 'left' }}>
+            <label>Super Admin ID</label>
+            <input value={adminId} onChange={(e) => setAdminId(e.target.value)} placeholder="Jaise — gautam-admin" autoCapitalize="none" autoCorrect="off" />
+            <label>Password</label>
+            <input type="password" value={adminPass} onChange={(e) => setAdminPass(e.target.value)} placeholder="Kam se kam 6 character" />
+            <label>Password dobara</label>
+            <input type="password" value={adminPass2} onChange={(e) => setAdminPass2(e.target.value)} placeholder="Password dobara daalein" />
+            <button className="btn btn-orange" style={{ width: '100%', justifyContent: 'center', marginTop: 16 }} onClick={setupAdminAccount}><KeyRound size={17} /> Super Admin Account Banao</button>
+          </div>
+          <p className="small muted" style={{ marginTop: 18 }}>Ya purana tareeka — staff passcode set karo:</p>
           <div style={{ display: 'flex', gap: 10, maxWidth: 420, margin: '0 auto' }}>
-            <input type="password" value={newPass} onChange={(e) => setNewPass(e.target.value)} placeholder="Naya passcode — kam se kam 4 character" />
-            <button className="btn btn-orange" onClick={setPasscode}>Set Karo</button>
+            <input type="password" value={newPass} onChange={(e) => setNewPass(e.target.value)} placeholder="Staff passcode — kam se kam 4 character" />
+            <button className="btn btn-ghost" onClick={setPasscode}>Set Karo</button>
           </div>
         </div>
       </section>
     )
   }
-  if (!props.unlocked) {
+
+  // Step 2 — account exists but not logged in: ID + password login (passcode fallback below).
+  if (!isAdminIn) {
     return (
       <section className="section container">
         <h2>Super Admin Panel</h2>
         <div className="empty">
           <ShieldCheck size={40} color="#0f4c4c" />
-          <h3>Staff passcode daalo</h3>
-          <div style={{ display: 'flex', gap: 10, maxWidth: 420, margin: '0 auto' }}>
-            <input type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="Super Admin passcode" />
-            <button className="btn btn-orange" onClick={unlock}>Kholo</button>
-          </div>
+          <h3>Super Admin Login</h3>
+          <p className="muted">Apni Super Admin ID + password se login karo — kisi bhi browser se. Session 30 din tak rahega. Login hub me Super Admin chuno, phir apni ID + password daalo.</p>
+          <button className="btn btn-orange" style={{ width: '100%', justifyContent: 'center', marginTop: 16 }}
+            onClick={() => props.onOpenAuth('admin')}>Super Admin Login Kholo</button>
+          {db.settings.adminPasscodeHash && (
+            <>
+              <p className="small muted" style={{ marginTop: 18 }}>Ya staff passcode se kholo (fallback):</p>
+              <div style={{ display: 'flex', gap: 10, maxWidth: 420, margin: '0 auto' }}>
+                <input type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="Staff passcode" />
+                <button className="btn btn-orange" onClick={unlock}>Kholo</button>
+              </div>
+            </>
+          )}
         </div>
       </section>
     )
@@ -1035,7 +1189,16 @@ function AdminView(props: {
   return (
     <section className="section container">
       <div className="admin-dark">
-        <h2 style={{ marginTop: 0, color: '#fff' }}>Super Admin — Control Room</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <h2 style={{ marginTop: 0, color: '#fff' }}>Super Admin — Control Room</h2>
+          {props.adminSessionUser && (
+            <span className="account-chip admin-chip" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}>
+              <span className="avatar" style={{ background: '#b45309' }}><Crown size={15} /></span>
+              Admin: {props.adminSessionUser.username}
+              <button className="btn-ghost btn btn-sm" onClick={props.onAdminLogout} aria-label="Super Admin log out"><LogOut size={15} /></button>
+            </span>
+          )}
+        </div>
         <p className="muted" style={{ color: '#9fc4bb' }}>Platform ki poori jaankari ek jagah. Listing verify/delete, owners aur PIN — sab yahin se.</p>
         <div className="stat-tiles">
           <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.properties.length}</b><span>Total PGs</span></div>
@@ -1055,9 +1218,9 @@ function AdminView(props: {
           {db.properties.length === 0 && <p className="muted">Abhi koi listing nahi hai. Pehla owner List PG karega, tab yahan aayega.</p>}
           {db.properties.map((p) => (
             <div className="review" key={p.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-              <div><b>{p.name}</b> — {p.locality}, {p.city} • {inr(p.rent)} • {p.availableBeds}/{p.totalBeds} beds<br />
+              <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.name}</b> — {p.locality}, {p.city} • {inr(p.rent)} • {p.availableBeds}/{p.totalBeds} beds<br />
                 <span className="muted small">Owner: {p.ownerPhone} • {timeAgo(p.createdAt)}</span></div>
-              <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button className="btn btn-sm" onClick={() => props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) x.verified = !x.verified; return d })}>
                   {p.verified ? 'Unverify Karo' : 'Verify Karo ✓'}
                 </button>
@@ -1070,12 +1233,14 @@ function AdminView(props: {
         <div className="panel">
           <h3 style={{ marginTop: 0 }}>Owners Directory</h3>
           {owners.length === 0 && <p className="muted">Abhi koi owner account nahi hai.</p>}
+          <div className="table-wrap">
           <table className="table">
             <thead><tr><th>Owner</th><th>Phone</th><th>PGs</th><th>PIN</th></tr></thead>
             <tbody>{owners.map((o) => (
               <tr key={o.id}><td>{o.name}</td><td>{o.phone}</td><td>{db.properties.filter((p) => p.ownerPhone === o.phone).length}</td><td>{o.pinHash ? 'Set hai' : 'Nahi set'}</td></tr>
             ))}</tbody>
           </table>
+          </div>
           <h4>Owner PIN set / reset karo</h4>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <input value={pinOwnerPhone} onChange={(e) => setPinOwnerPhone(e.target.value)} placeholder="Owner WhatsApp number" style={{ maxWidth: 220 }} inputMode="tel" />
@@ -1101,6 +1266,12 @@ function SiteFooter({ onGo }: { onGo: (v: View) => void }) {
           {['PG in Hazaribagh', 'Hostel in Hazaribagh', 'Girls hostel Hazaribagh', 'Boys PG Hazaribagh', 'PG near VBU', 'Matwari PG', 'Korrah hostel', 'PG in Ranchi', 'Lalpur PG Ranchi', 'Bariatu hostel', 'Hostel in Ranchi', 'PG with food Hazaribagh'].map((s) => (
             <a key={s} href="#listings" onClick={(e) => { e.preventDefault(); onGo('home') }}>{s}</a>
           ))}
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 24 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => onGo('home')}>Home</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => onGo('bookings')}>My Bookings</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => onGo('owner')}>Owner Portal</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => onGo('admin')}>Super Admin</button>
         </div>
         <p className="small" style={{ marginTop: 24 }}>StayHazaribagh — Free listing, free search. Listings by default Not Verified hoti hain; Super Admin verify karta hai. Reviews sirf is site par likhe gaye hain.</p>
         <p className="small">Hazaribagh • Ranchi — Jharkhand, India</p>

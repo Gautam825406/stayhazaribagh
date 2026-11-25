@@ -5,7 +5,8 @@
   --shadow:0 10px 30px rgba(15,76,76,.12); --shadow-sm:0 3px 12px rgba(15,76,76,.10);
 }
 *{box-sizing:border-box}
-html{scroll-behavior:smooth}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%;text-size-adjust:100%}
+html,body{overflow-x:clip}
 body{margin:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--paper);color:var(--ink);-webkit-tap-highlight-color:transparent}
 h1,h2,h3,.serif{font-family:Fraunces,Georgia,serif}
 a{color:var(--teal-2)}
@@ -37,7 +38,8 @@ label{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}
 .trust-strip .container{display:flex;gap:18px;align-items:center;justify-content:center;flex-wrap:wrap;padding:7px 18px}
 .trust-strip span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .topbar{position:sticky;top:0;z-index:40;background:rgba(255,253,247,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
-.topbar-inner{display:flex;align-items:center;gap:16px;padding:12px 0}
+.topbar-inner{display:flex;align-items:center;gap:12px;padding:12px 0;min-width:0}
+.header-actions{margin-left:auto;flex-shrink:0}
 .brand{display:flex;align-items:center;gap:11px;text-decoration:none;color:var(--ink);flex-shrink:0}
 .brand-mark{width:46px;height:46px;border-radius:13px;background:linear-gradient(135deg,var(--teal),var(--teal-2));display:grid;place-items:center;color:#fff;position:relative;box-shadow:var(--shadow-sm)}
 .brand-mark b{font-family:Fraunces,serif;font-size:24px}
@@ -45,11 +47,9 @@ label{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}
 .brand-name{font-family:Fraunces,serif;font-size:23px;font-weight:700;line-height:1;letter-spacing:-.01em;white-space:nowrap}
 .brand-name em{font-style:normal;color:var(--orange-2)}
 .brand-sub{font-size:11.5px;color:var(--muted);margin-top:3px;letter-spacing:.02em}
-.nav-pills{display:flex;gap:4px;background:#efe8d6;border-radius:999px;padding:4px;margin-left:auto}
-.nav-pills button{border:0;background:transparent;padding:9px 15px;border-radius:999px;font-weight:600;color:var(--muted)}
-.nav-pills button.active{background:linear-gradient(135deg,var(--teal),var(--teal-2));color:#fff;box-shadow:var(--shadow-sm)}
 .header-actions{display:flex;gap:10px;align-items:center}
-.account-chip{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1.5px solid var(--line);border-radius:999px;padding:6px 12px 6px 6px;font-weight:700;font-size:14px}
+.account-chip{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1.5px solid var(--line);border-radius:999px;padding:6px 12px 6px 6px;font-weight:700;font-size:14px;white-space:nowrap;max-width:100%}
+.admin-chip{background:#fef3c7;border-color:#f0d9a0}
 .avatar{width:32px;height:32px;border-radius:50%;background:var(--teal);color:#fff;display:grid;place-items:center;font-size:14px}
 .brand-line{height:3px;background:linear-gradient(90deg,var(--teal),var(--orange))}
 
@@ -109,6 +109,14 @@ label{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}
 @keyframes pop{from{opacity:0;transform:scale(.96) translateY(12px)}to{opacity:1;transform:scale(1) translateY(0)}}
 .sheet-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
 .close-btn{border:1.5px solid var(--line);background:#fff;border-radius:50%;width:40px;height:40px;flex-shrink:0}
+.grab-handle{width:44px;height:5px;border-radius:99px;background:#d8cdb2;margin:0 auto 12px}
+.portal-switch{display:flex;gap:6px}
+.portal-switch button{flex:1;min-width:0;border:1.5px solid var(--line);background:#fff;border-radius:12px;padding:11px 4px;font-weight:700;font-size:13px;color:var(--muted);display:inline-flex;align-items:center;justify-content:center;gap:5px;white-space:nowrap;min-height:44px}
+.portal-switch button.active{background:var(--teal);color:#fff;border-color:var(--teal)}
+.stepper{width:36px !important;height:36px !important;min-height:36px !important;padding:0 !important;justify-content:center;font-size:18px}
+.form-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.table-wrap .table{min-width:480px}
 .steps{display:flex;gap:8px;margin:18px 0}
 .steps span{flex:1;text-align:center;font-size:12px;font-weight:700;padding:9px 4px;border-radius:999px;background:#efe8d6;color:var(--muted)}
 .steps span.on{background:var(--teal);color:#fff}
@@ -147,23 +155,42 @@ footer h3{color:#fff}
   .toast{bottom:24px}
 }
 /* ---------- mobile app feel ---------- */
-.bottom-bar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:60;background:rgba(255,253,247,.97);backdrop-filter:blur(12px);border-top:1px solid var(--line);padding:6px 8px calc(8px + env(safe-area-inset-bottom));gap:2px}
+.bottom-bar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:60;background:rgba(255,253,247,.97);backdrop-filter:blur(12px);border-top:1px solid var(--line);padding:6px 8px calc(8px + env(safe-area-inset-bottom));gap:2px;transform:translateZ(0);will-change:transform}
 .bottom-bar button{flex:1;border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;font-weight:700;color:var(--muted);padding:7px 2px;min-height:52px;border-radius:12px}
 .bottom-bar button.active{color:var(--teal)}
 .bottom-bar button.active .bb-icon{background:#dcf5e9}
 .bb-icon{width:38px;height:26px;border-radius:999px;display:grid;place-items:center}
 .bb-fab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;font-weight:700;color:var(--orange-2);background:none;border:0;padding:0}
 .bb-fab span{width:52px;height:52px;margin-top:-26px;border-radius:50%;background:linear-gradient(135deg,var(--orange),var(--orange-2));color:#fff;display:grid;place-items:center;box-shadow:0 8px 20px rgba(245,158,11,.45);border:3px solid var(--paper)}
-@media(min-width:768px){.bottom-bar{display:none}.nav-pills{display:flex}}
+@media(min-width:768px){.bottom-bar{display:none}}
 @media(max-width:767px){
-  .nav-pills,.header-actions .btn-ghost{display:none}
-  .brand-name{font-size:19px}
+  /* Form controls 16px on phones only — stops iOS auto-zoom on focus */
+  input,select,textarea{font-size:16px}
+  .topbar-inner{gap:8px;padding:10px 0}
+  .brand-mark{width:38px;height:38px;border-radius:11px}
+  .brand-mark b{font-size:20px}
+  .brand-name{font-size:17px}
+  .brand-sub{display:none}
+  .header-actions{gap:6px}
+  .header-actions .btn{padding:9px 12px;font-size:13px;min-height:40px}
+  .header-actions .btn .btn-sm{padding:8px 10px}
   .trust-strip .container{gap:10px;font-size:11.5px}
   .grid,.guide-grid{grid-template-columns:1fr}
   .stats-row{grid-template-columns:repeat(2,1fr)}
   .stat-tiles{grid-template-columns:repeat(2,1fr)}
   .hero-inner{padding:36px 0 24px}
   main{padding-bottom:90px}
+  .sheet{padding:18px 16px}
+  .form-grid-2{grid-template-columns:1fr}
+  .table-wrap .table{min-width:420px}
+  .table th,.table td{padding:8px 6px;font-size:13px}
+  .portal-switch button{font-size:12px;padding:10px 2px}
+}
+@media(max-width:480px){
+  /* Header List PG button lives in the bottom tab bar (FAB) on small phones */
+  .header-actions .btn-orange{display:none}
+  .brand-name{font-size:16px}
+  .account-chip{font-size:12px}
 }
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}

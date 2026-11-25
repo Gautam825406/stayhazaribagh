@@ -87,6 +87,19 @@ export interface Complaint {
   createdAt: string
 }
 
+export interface AdminAccount {
+  id: string
+  username: string // Super Admin ID, chosen once by the site owner
+  salt: string
+  passwordHash: string
+  createdAt: string
+}
+
+export interface AdminSession {
+  adminId: string
+  expiresAt: number
+}
+
 export interface Settings {
   adminPasscodeHash: string | null
   adminSalt: string | null
@@ -106,6 +119,8 @@ export interface DB {
   complaints: Complaint[]
   settings: Settings
   session: Session | null
+  adminAccount: AdminAccount | null
+  adminSession: AdminSession | null
   failedLogins: Record<string, { count: number; lockUntil: number }>
 }
 
@@ -128,6 +143,8 @@ export function emptyDB(): DB {
     complaints: [],
     settings: { adminPasscodeHash: null, adminSalt: null },
     session: null,
+    adminAccount: null,
+    adminSession: null,
     failedLogins: {},
   }
 }

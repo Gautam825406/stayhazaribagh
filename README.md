@@ -21,27 +21,40 @@ version, built fresh from the PRD.
   owner and admin dashboards, with explanation text.
 - **Reviews** — detail view has average stars, a review list with dates, and
   a form (name + stars + comment). Only reviews written on this site.
-- **Login & Signup** — free accounts (name, WhatsApp number, optional email,
-  password, role: tenant *"PG Dhoondhna Hai"* or owner *"Main PG Owner
-  Hoon"*). Session lasts 30 days. Passwords are stored only as a salted
-  SHA-256 hash (Web Crypto, per-user salt) — never plain text. 5 wrong
-  passwords = 15-minute lock.
+- **Login & Signup hub** — one polished hub with three clear entrances:
+  **User** (tenant), **PG Admin** (owner) and **Super Admin**. Tenant/owner
+  signup/login with name, WhatsApp number, optional email, password (salted
+  SHA-256 hash, 30-day session, 5 wrong passwords = 15-minute lock). Each
+  entrance lands on its own dashboard.
+- **Super Admin account (real ID + password)** — the site owner creates a
+  Super Admin ID + password **once** from the Super Admin panel. There is
+  **no public admin signup** and **no preset ID/password**, so nobody else
+  can claim it. After that, the admin logs in from any browser with that
+  ID + password (30-day session, header admin chip, proper logout). The
+  account is stored hashed in localStorage. The old staff passcode stays
+  as a fallback unlock path only if it was already set.
 - **Owner Portal (Makan Malik)** — WhatsApp number + 4-digit Portal PIN or
   account login, scoped to the owner's own PGs only: beds +/-, tenants,
-  rent & dues, enquiries, complaints, occupancy stats.
-- **Super Admin Panel** — dark dashboard: platform stats, Hazaribagh vs
-  Ranchi split, listing verify/delete, owners directory, owner PIN
-  set/reset. Gated by a staff passcode you set on first run (hashed).
-- **Tenant My Bookings** — enquiry status tracker, via login or via the
-  private 6-letter enquiry code given at enquiry time.
+  rent & dues, enquiries, complaints, occupancy stats. Bed steppers are
+  36px for thumbs; dashboard rows wrap cleanly on ~320px phones.
+- **Tenant My Bookings** — summary tiles (total enquiries, booked,
+  in-progress, open complaints) plus the enquiry status tracker, via login
+  or via the private 6-letter enquiry code given at enquiry time.
 - **List PG FREE** — 4-step owner listing form. Tells the owner the listing
   starts as Not Verified.
 - **SEO for Hazaribagh** — title/meta description, locality guide sections,
   rent FAQs, popular-searches footer, semantic headings, Hinglish copy.
+- **Header (clean)** — no desktop pill nav. Header shows only the
+  StayHazaribagh brand, List PG FREE button and Login / Sign Up (or the
+  account / admin chip). Home, My Bookings, Owner and Admin stay reachable
+  via footer links, the mobile bottom tab bar, and the logo (= Home).
 - **Mobile 100% responsive, Android-app feel** — fixed bottom tab bar on
-  mobile only (Home, Bookings, raised List PG button, Owner, Admin), slim
-  app bar, full-width city toggle, 44px touch targets, no horizontal
-  overflow, safe-area padding. Animations respect
+  mobile only (Home, Bookings, raised List PG button, Owner, Admin), sticky
+  header pinned on top, slim app bar, full-width city toggle, 44px touch
+  targets, no horizontal overflow, safe-area padding. Form controls are
+  16px on phones (stops iOS auto-zoom on focus); the PG detail sheet locks
+  body scroll, closes on backdrop tap or Escape, and has a grab handle.
+  Login/Sign Up buttons always fit inside the viewport. Animations respect
   `prefers-reduced-motion`.
 
 ## Data rule — zero fake listings
@@ -94,14 +107,17 @@ git push -u origin main
 
 ## First launch checklist
 
-1. **Super Admin passcode** — open the site → **Admin** tab → set your
-   staff passcode the first time (you will be prompted). Keep it private.
-   Only this passcode opens the Super Admin panel.
+1. **Super Admin ID + password** — open the site → **Admin** tab → create
+   your Super Admin ID + password once (min. 4-char ID, min. 6-char
+   password). Keep it private. After that, log in from any browser via
+   Login → Super Admin with that ID + password. (If a staff passcode was
+   already set, it still works as a fallback unlock.)
 2. **First owner listing** — ask one real PG owner in Hazaribagh to tap
    **List PG FREE** and fill the 4 steps, or list it for them from their
    WhatsApp number. It goes live immediately as **Not Verified**.
-3. **Verify it** — Admin tab → unlock with your passcode → Listings →
-   **Verify Karo**. The teal Verified badge appears everywhere.
+3. **Verify it** — Admin tab → log in with your Super Admin ID +
+   password → Listings → **Verify Karo**. The teal Verified badge appears
+   everywhere.
 4. **Owner PIN** — in the Owner Portal the owner sets a 4-digit Portal PIN;
    Super Admin can also set/reset any owner's PIN from the Admin panel.
 5. **Tenant test** — search, open a PG, send an enquiry, note the 6-letter
