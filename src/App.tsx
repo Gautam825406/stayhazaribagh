@@ -12,7 +12,7 @@ import {
 import {
   ApiError, apiConfigured, apiErrorMessage, apiListingToProperty, adminLogin,
   adminSetup, clearAdminToken, clearToken, createEnquiry, createListing, createReview,
-  deleteListing as apiDeleteListing, getStoredUser, getToken, listListings,
+  deleteListing as apiDeleteListing, getStoredUser, getToken, listAllListings,
   normalizeAuthResponse, propertyToApiListing, register as apiRegister, login as apiLogin,
   setAdminToken, setStoredUser, setToken, updateListing as apiUpdateListing,
   verifyListing as apiVerifyListing,
@@ -84,9 +84,8 @@ export default function App() {
     if (!apiConfigured()) return
     setApiLoading(true)
     try {
-      const res = await listListings({
+      const res = await listAllListings({
         verified: verifiedTab === 'All' ? undefined : verifiedTab === 'Verified',
-        limit: 500,
       })
       setApiListings(res.items.map(apiListingToProperty))
       setApiFailed(false)

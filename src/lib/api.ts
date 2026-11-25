@@ -404,6 +404,44 @@ export async function listListings(query: ListingQuery = {}): Promise<ListingsRe
   return { items: obj.items ?? [], total: obj.total ?? (obj.items ?? []).length }
 }
 
+/**
+ * Fetch ALL listings, paging through the backend's limit (max 100/page).
+ * The app used to ask for limit=500 in one call, which the backend rejects
+ * with 422 — that is why the live site stayed in offline mode. Each page is
+ * retried once on a network/5xx error (Render free tier can 500 on a cold
+ * start), then the error propagates and the app falls back to local data.
+ */
+export async function listAllListings(
+  query: Omit<ListingQuery, 'limit' | 'offset'> = {},
+): Promise<ListingsResponse> {
+  const PAGE = 100
+  const items: ApiListing[] = []
+  let total = 0
+  let offset = 0
+  for (;;) {
+    let page: ListingsResponse | null = null
+    let lastErr: unknown = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        page = await listListings({ ...query, limit: PAGE, offset })
+        break
+      } catch (err) {
+        lastErr = err
+        const retryable =
+          err instanceof ApiError && (err.status === 0 || err.status >= 500)
+        if (!retryable || attempt === 1) throw err
+        await new Promise((r) => setTimeout(r, 1500))
+      }
+    }
+    if (!page) throw lastErr instanceof Error ? lastErr : new Error('Listings load nahi hui')
+    total = page.total
+    items.push(...page.items)
+    offset += page.items.length
+    if (page.items.length === 0 || items.length >= total) break
+  }
+  return { items, total }
+}
+
 export async function getListing(id: string | number): Promise<ApiListing> {
   return request<ApiListing>(`/api/listings/${encodeURIComponent(String(id))}`, { token: 'none' })
 }
