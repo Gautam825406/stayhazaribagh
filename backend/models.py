@@ -38,6 +38,14 @@ class User(Base):
     role = Column(String(20), nullable=False, default="tenant")  # tenant | owner
     verified_owner = Column(Boolean, nullable=False, default=False,
                             server_default=text("false"))
+    # Owner registration approval: pending | approved | rejected | hold.
+    # NEW owner signups start 'pending' (Super Admin approves them in the
+    # New Requests queue); tenants and ALL pre-existing accounts are
+    # 'approved' (grandfathered — nobody already registered gets locked out).
+    approval_status = Column(String(20), nullable=False, default="approved",
+                             server_default=text("'approved'"))
+    # Admin's reason (reject) or note (hold) — shown to the owner.
+    approval_note = Column(Text, nullable=True)
     failed_login_attempts = Column(Integer, nullable=False, default=0)
     locked_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=_now)

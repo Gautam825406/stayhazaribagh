@@ -89,6 +89,16 @@ def create_listing(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only owners can create listings",
         )
+    # A pending / held / rejected owner cannot list a PG — only after
+    # Super Admin approves the registration (New Requests queue).
+    if (user.approval_status or "approved") != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Owner registration approval pending — Admin approve "
+                "karega, phir PG list kar sakoge"
+            ),
+        )
     listing = models.Listing(**body.model_dump(), owner_id=user.id,
                             verified=False, status="pending",
                             rejection_reason=None)

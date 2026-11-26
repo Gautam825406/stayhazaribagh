@@ -83,6 +83,8 @@ class TokenResponse(BaseModel):
     role: str
     user_id: Optional[int] = None
     name: Optional[str] = None
+    # Owner registration approval: pending | approved | rejected | hold.
+    approval_status: Optional[str] = None
 
 
 class UserResponse(BaseModel):
@@ -112,6 +114,12 @@ class ListingCreate(BaseModel):
     source: Optional[str] = Field(None, max_length=80)
     source_url: Optional[str] = None
     maps: Optional[str] = None
+
+
+class AdminListingCreate(ListingCreate):
+    """Super Admin adds a PG himself — owner_id optional (admin's own
+    listing when omitted). Goes live + verified immediately."""
+    owner_id: Optional[int] = None
 
 
 class ListingUpdate(BaseModel):
@@ -183,6 +191,8 @@ class OwnerAdminResponse(BaseModel):
     whatsapp: str
     role: str
     verified_owner: bool
+    approval_status: str = "approved"
+    approval_note: Optional[str] = None
     listings_count: int
     created_at: datetime
 
@@ -193,14 +203,33 @@ class OwnerVerifyRequest(BaseModel):
     verified: bool
 
 
+class OwnerApprovalRequest(BaseModel):
+    """reason for reject, note for hold — shown to the owner."""
+    reason: Optional[str] = None
+    note: Optional[str] = None
+
+
+class OwnerUpdateRequest(BaseModel):
+    """Admin edits an owner's details before approving them."""
+    name: Optional[str] = Field(None, min_length=2, max_length=120)
+
+
 class OwnerMeResponse(BaseModel):
     id: int
     name: str
     whatsapp: str
     role: str
     verified_owner: bool
+    approval_status: str = "approved"
+    approval_note: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+
+class NewRequestsResponse(BaseModel):
+    """Super Admin New Requests queue: owner registrations + pending PGs."""
+    owner_requests: list[OwnerAdminResponse]
+    listing_requests: list[ListingResponse]
 
 
 # ---------------------------------------------------------------- enquiries

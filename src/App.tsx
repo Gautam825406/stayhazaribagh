@@ -5,9 +5,9 @@ import {
   Settings, ShieldAlert, ShieldCheck, Star, UserRound, Users, UtensilsCrossed, Wallet, X,
 } from 'lucide-react'
 import {
-  ALL_LOCALITIES, LOCALITIES, avgRating, enquiryCode, hashSecret, inr, loadDB,
+  ALL_LOCALITIES, LOCALITIES, approvalStatusOf, avgRating, enquiryCode, hashSecret, inr, loadDB,
   mapsDirectionsUrl, mapsSearchUrl, occupancy, randomSalt, saveDB, timeAgo, uid,
-  type City, type DB, type Enquiry, type Gender, type MessPayment,
+  type ApprovalStatus, type City, type DB, type Enquiry, type Gender, type MessPayment,
   type PoliceVerification, type Property, type RentRecord, type Role, type TenantDocument,
   type TenantRecord, type User,
 } from './lib/store'
@@ -20,6 +20,9 @@ import {
   verifyListing as apiVerifyListing,
   approveListing as apiApproveListing, rejectListing as apiRejectListing,
   adminListings as apiAdminListings, adminOwners as apiAdminOwners, verifyOwner as apiVerifyOwner,
+  getAdminRequests as apiGetAdminRequests, approveOwner as apiApproveOwner, rejectOwner as apiRejectOwner,
+  holdOwner as apiHoldOwner, unholdOwner as apiUnholdOwner, updateOwnerName as apiUpdateOwnerName,
+  adminCreateListing as apiAdminCreateListing, getAdminOverview as apiGetAdminOverview,
   getOwnerMe as apiGetOwnerMe, getOwnerSummary as apiGetOwnerSummary,
   createTenant as apiCreateTenant, listTenants as apiListTenants, updateTenant as apiUpdateTenant,
   listDocuments as apiListDocuments, createDocument as apiCreateDocument, updateDocument as apiUpdateDocument,
@@ -43,7 +46,7 @@ type CityFilter = 'Both' | City
 type VerifiedTab = 'All' | 'Verified' | 'Unverified'
 type ApiStatus = 'local' | 'live' | 'offline'
 type OwnerSection = 'dashboard' | 'PGs' | 'Enquiries' | 'Tenants' | 'Rent & Dues' | 'Documents' | 'Mess' | 'Complaints' | 'reviews' | 'profile'
-type AdminSection = 'dashboard' | 'all' | 'verified' | 'unverified' | 'pending' | 'pgdetails' | 'owners' | 'users' | 'enquiries' | 'reviews' | 'complaints' | 'settings'
+type AdminSection = 'dashboard' | 'all' | 'verified' | 'unverified' | 'pending' | 'requests' | 'addpg' | 'pgdetails' | 'owners' | 'users' | 'enquiries' | 'reviews' | 'complaints' | 'settings'
 type TenantSection = 'bookings' | 'saved' | 'profile'
 
 function CountUp({ to, suffix = '' }: { to: number; suffix?: string }) {
@@ -89,8 +92,13 @@ export default function App() {
   const [apiFailed, setApiFailed] = useState(false)
   /** Owner verification (API mode: GET /api/owner/me; null = not loaded / failed). */
   const [apiOwnerVerified, setApiOwnerVerified] = useState<boolean | null>(null)
+  /** Owner registration approval (API mode: GET /api/owner/me
+      approval_status; null = not loaded / failed → local user field). */
+  const [apiOwnerApproval, setApiOwnerApproval] = useState<{ status: ApprovalStatus; note?: string } | null>(null)
   const [ownerMeNonce, setOwnerMeNonce] = useState(0)
   const refreshOwnerVerified = () => setOwnerMeNonce((n) => n + 1)
+  /** Super Admin "New Requests" pending-count badge (reported by AdminView). */
+  const [requestsBadge, setRequestsBadge] = useState(0)
   const [verifiedTab, setVerifiedTab] = useState<VerifiedTab>('All')
   const [userLoc, setUserLoc] = useState<LatLng | null>(null)
   const [nearestFirst, setNearestFirst] = useState(false)
@@ -198,25 +206,44 @@ export default function App() {
     return db.users.find((u) => u.id === db.session!.userId) || null
   }, [db])
 
-  /** Owner verification state: API mode calls GET /api/owner/me when the
-      owner is logged in (re-fetched via refreshOwnerVerified, e.g. after an
-      approval); on failure it falls back to the local user.verifiedOwner.
-      Local mode uses db user.verifiedOwner (default false). */
+  /** Owner verification + approval state: API mode calls GET /api/owner/me
+      when the owner is logged in (re-fetched via refreshOwnerVerified, e.g.
+      after an approval); on failure it falls back to the local
+      user.verifiedOwner / user.approvalStatus. Local mode uses the db user
+      fields (missing approvalStatus = grandfathered 'approved'). */
   useEffect(() => {
     if (!sessionUser || sessionUser.role !== 'owner' || !apiConfigured()) {
       setApiOwnerVerified(null)
+      setApiOwnerApproval(null)
       return
     }
     let cancelled = false
     apiGetOwnerMe()
-      .then((me) => { if (!cancelled) setApiOwnerVerified(!!me.verified_owner) })
-      .catch(() => { if (!cancelled) setApiOwnerVerified(null) })
+      .then((me) => {
+        if (cancelled) return
+        setApiOwnerVerified(!!me.verified_owner)
+        if (me.approval_status) {
+          setApiOwnerApproval({ status: me.approval_status, note: me.approval_note ?? undefined })
+        } else {
+          setApiOwnerApproval(null)
+        }
+      })
+      .catch(() => { if (!cancelled) { setApiOwnerVerified(null); setApiOwnerApproval(null) } })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionUser?.id, ownerMeNonce])
   const ownerVerified = sessionUser?.role === 'owner'
     ? (apiOwnerVerified ?? sessionUser.verifiedOwner ?? false)
     : false
+  /** Owner registration approval: API value wins, else the local user field
+      (grandfathered 'approved' when missing). Tenants are always approved. */
+  const ownerApprovalStatus: ApprovalStatus = sessionUser?.role === 'owner'
+    ? (apiOwnerApproval?.status ?? approvalStatusOf(sessionUser))
+    : 'approved'
+  const ownerApprovalNote: string | undefined = sessionUser?.role === 'owner'
+    ? (apiOwnerApproval?.note ?? sessionUser.approvalNote)
+    : undefined
+  const ownerApproved = ownerApprovalStatus === 'approved'
 
   const showToast = (m: string) => setToast(m)
   const update = (fn: (d: DB) => DB) => setDb((prev) => fn(structuredClone(prev)))
@@ -301,8 +328,15 @@ export default function App() {
         setToken(auth.token)
         const apiUser = auth.user ?? { name: data.name.trim() || phone, phone, role: data.role }
         setStoredUser(apiUser)
-        // Mirror the account locally (salted hash, 30-day session) so the
-        // existing session logic and the offline fallback keep working.
+        // Approval status comes from the server when it sends one; a new
+        // owner signup without it starts 'pending', a login without it
+        // keeps the saved status (grandfathered 'approved').
+        const existingLocal = db.users.find((u) => u.phone === phone)
+        const mirroredApproval: ApprovalStatus = apiUser.approval_status
+          ?? (mode === 'signup'
+            ? (apiUser.role === 'owner' ? 'pending' : 'approved')
+            : (existingLocal?.approvalStatus ?? 'approved'))
+        const mirroredNote: string | undefined = apiUser.approval_note ?? existingLocal?.approvalNote
         const salt = randomSalt()
         const passwordHash = await hashSecret(data.password, salt)
         update((d) => {
@@ -312,12 +346,16 @@ export default function App() {
             existing.role = apiUser.role
             existing.salt = salt
             existing.passwordHash = passwordHash
+            existing.approvalStatus = mirroredApproval
+            existing.approvalNote = mirroredNote
             d.session = { userId: existing.id, expiresAt: Date.now() + 30 * 86400000 }
           } else {
             const user: User = {
               id: apiUser.id !== undefined ? String(apiUser.id) : uid(),
               name: apiUser.name, phone, email: data.email.trim() || undefined,
-              role: apiUser.role, salt, passwordHash, createdAt: new Date().toISOString(),
+              role: apiUser.role, salt, passwordHash,
+              approvalStatus: mirroredApproval, approvalNote: mirroredNote,
+              createdAt: new Date().toISOString(),
             }
             d.users.push(user)
             d.session = { userId: user.id, expiresAt: Date.now() + 30 * 86400000 }
@@ -326,7 +364,13 @@ export default function App() {
           return d
         })
         setAuthOpen(null)
-        showToast(mode === 'signup' ? `Welcome, ${apiUser.name}! Account ban gaya — 30 din tak login rahega.` : `Welcome back, ${apiUser.name}!`)
+        showToast(
+          mode === 'signup'
+            ? apiUser.role === 'owner' && mirroredApproval === 'pending'
+              ? `Welcome, ${apiUser.name}! Registration Super Admin ko bhej di gayi — approval milte hi owner portal khul jayega.`
+              : `Welcome, ${apiUser.name}! Account ban gaya — 30 din tak login rahega.`
+            : `Welcome back, ${apiUser.name}!`,
+        )
         // Login/signup ke baad seedha role ka dashboard (left-sidebar layout) kholo.
         if (apiUser.role === 'owner') { setOwnerSection('dashboard'); setOwnerPinUnlocked(true); go('owner') }
         else { setTenantSection('bookings'); go('bookings') }
@@ -341,10 +385,14 @@ export default function App() {
       if (db.users.some((u) => u.phone === phone)) return showToast('Is number se account pehle se hai — Login karein')
       const salt = randomSalt()
       const passwordHash = await hashSecret(data.password, salt)
-      const user: User = { id: uid(), name: data.name.trim(), phone, email: data.email.trim() || undefined, role: data.role, salt, passwordHash, createdAt: new Date().toISOString() }
+      // Local mode: a new owner starts 'pending' — Super Admin approves
+      // first, tabhi portal khulta hai. Tenants are always 'approved'.
+      const user: User = { id: uid(), name: data.name.trim(), phone, email: data.email.trim() || undefined, role: data.role, salt, passwordHash, approvalStatus: data.role === 'owner' ? 'pending' : 'approved', createdAt: new Date().toISOString() }
       update((d) => { d.users.push(user); d.session = { userId: user.id, expiresAt: Date.now() + 30 * 86400000 }; return d })
       setAuthOpen(null)
-      showToast(`Welcome, ${user.name}! Account ban gaya — 30 din tak login rahega.`)
+      showToast(user.role === 'owner'
+        ? `Welcome, ${user.name}! Registration Super Admin ko bhej di gayi — approval milte hi owner portal khul jayega.`
+        : `Welcome, ${user.name}! Account ban gaya — 30 din tak login rahega.`)
       if (user.role === 'owner') { setOwnerSection('dashboard'); setOwnerPinUnlocked(true); go('owner') }
       else { setTenantSection('bookings'); go('bookings') }
     } else {
@@ -509,6 +557,74 @@ export default function App() {
     }
   }
 
+  /** Super Admin: approve an owner registration (API) — unlocks full suite. */
+  async function handleApiApproveOwner(id: string): Promise<boolean> {
+    try {
+      await apiApproveOwner(id)
+      refreshOwnerVerified()
+      showToast('Owner approve ho gaya — ab full suite unlock hai, owner verified bhi ho gaya.')
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+
+  /** Super Admin: reject / hold / unhold / rename an owner (API). */
+  async function handleApiRejectOwner(id: string, reason: string): Promise<boolean> {
+    try {
+      await apiRejectOwner(id, reason)
+      showToast('Owner reject kar diya gaya — owner ko reason dikhega.')
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+  async function handleApiHoldOwner(id: string, note: string): Promise<boolean> {
+    try {
+      await apiHoldOwner(id, note)
+      showToast('Owner On Hold kar diya gaya — owner ko note dikhega.')
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+  async function handleApiUnholdOwner(id: string): Promise<boolean> {
+    try {
+      await apiUnholdOwner(id)
+      showToast('Owner wapas Pending pe aa gaya.')
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+  async function handleApiRenameOwner(id: string, name: string): Promise<boolean> {
+    try {
+      await apiUpdateOwnerName(id, name)
+      showToast('Owner ka naam update ho gaya.')
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+
+  /** Super Admin: add a PG directly (API) — live + verified immediately. */
+  async function handleApiAdminCreateListing(body: Record<string, unknown>): Promise<boolean> {
+    try {
+      await apiAdminCreateListing(body)
+      await refreshListings()
+      showToast('PG live ho gaya — Verified badge ke saath.')
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+
   /** Near Me: browser location se nearest-first sort (approx distance). */
   function toggleNearMe() {
     if (nearestFirst) {
@@ -546,6 +662,17 @@ export default function App() {
     go('home')
   }
 
+  /** List PG wizard sirf tabhi khulta hai jab owner approved ho (ya user
+      tenant/guest ho). Unapproved owner PG list nahi kar sakta — pehle
+      Super Admin approval chahiye. */
+  function openListWizard() {
+    if (sessionUser?.role === 'owner' && !ownerApproved) {
+      showToast('Admin approval ka intezaar hai — approval milte hi PG list kar sakoge.')
+      return
+    }
+    setListOpen(true)
+  }
+
   /* ---------- Left-sidebar menus (all three dashboards) ---------- */
   const ownerPropIds = useMemo(() => new Set(
     sessionUser ? displayProperties.filter((p) => p.ownerPhone === sessionUser.phone || p.ownerId === sessionUser.id).map((p) => p.id) : [],
@@ -573,7 +700,7 @@ export default function App() {
     {
       heading: 'Mera Account',
       items: [
-        { id: 'list', label: 'Apna PG List Karo — FREE', icon: Plus, onClick: () => setListOpen(true) },
+        { id: 'list', label: 'Apna PG List Karo — FREE', icon: Plus, onClick: () => openListWizard() },
         ...(sessionUser
           ? [{ id: 'profile', label: 'Profile / My Account', icon: UserRound, onClick: () => { go('bookings'); setTenantSection('profile') } }]
           : [{ id: 'login', label: 'Login / Sign Up', icon: KeyRound, onClick: () => setAuthOpen({ mode: 'login', portal: 'user' }) }]),
@@ -586,7 +713,7 @@ export default function App() {
       items: [
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, onClick: () => { go('owner'); setOwnerSection('dashboard') } },
         { id: 'PGs', label: 'My PGs', icon: Building2, badge: ownerPropIds.size, onClick: () => { go('owner'); setOwnerSection('PGs') } },
-        { id: 'add', label: 'Add New PG', icon: Plus, onClick: () => setListOpen(true) },
+        { id: 'add', label: 'Add New PG', icon: Plus, onClick: () => openListWizard() },
       ],
     },
     {
@@ -634,7 +761,9 @@ export default function App() {
       heading: 'Control Room',
       items: [
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, onClick: () => { go('admin'); setAdminSection('dashboard') } },
+        { id: 'requests', label: 'New Requests', icon: ShieldAlert, badge: requestsBadge, onClick: () => { go('admin'); setAdminSection('requests') } },
         { id: 'pending', label: 'Pending Approvals', icon: ShieldAlert, badge: pendingCount, onClick: () => { go('admin'); setAdminSection('pending') } },
+        { id: 'addpg', label: 'Admin se PG Add Karo', icon: Plus, onClick: () => { go('admin'); setAdminSection('addpg') } },
         { id: 'pgdetails', label: 'PG Details', icon: Building2, onClick: () => { go('admin'); setAdminSection('pgdetails') } },
         { id: 'all', label: 'All PGs', icon: Building2, badge: totalProps, onClick: () => { go('admin'); setAdminSection('all') } },
         { id: 'verified', label: 'Verified PGs', icon: ShieldCheck, badge: verifiedCount, onClick: () => { go('admin'); setAdminSection('verified') } },
@@ -687,7 +816,7 @@ export default function App() {
             </span>
           </a>
           <div className="header-actions">
-            <button className="btn btn-orange" onClick={() => setListOpen(true)}><Plus size={18} /> List PG FREE</button>
+            <button className="btn btn-orange" onClick={() => openListWizard()}><Plus size={18} /> List PG FREE</button>
             {adminSessionUser && (
               <span className="account-chip admin-chip" title="Super Admin logged in">
                 <button className="account-chip-btn" onClick={goToDashboard} aria-label="Super Admin console kholo" title="Dashboard kholo">
@@ -729,7 +858,7 @@ export default function App() {
             verifiedTab={verifiedTab} setVerifiedTab={setVerifiedTab}
             userLoc={userLoc} nearestFirst={nearestFirst} onToggleNearMe={toggleNearMe}
             apiStatus={apiStatus} apiLoading={apiLoading}
-            onSelect={setSelected} onList={() => setListOpen(true)} onGo={go}
+            onSelect={setSelected} onList={() => openListWizard()} onGo={go}
             savedIds={savedIds} onToggleSave={toggleSave}
             onClearFilters={() => { setCity('Both'); setLocality('All'); setGender('All'); setMaxRent(8000); setQuery(''); setVerifiedTab('All'); setPage(1) }}
           />
@@ -770,8 +899,9 @@ export default function App() {
                 apiIds={apiIds} onApiBeds={handleApiBeds} onApiDelete={handleApiDelete}
                 onApiUpdate={handleApiUpdate} onRefreshListings={refreshListings}
                 ownerVerified={ownerVerified} refreshOwnerVerified={refreshOwnerVerified}
+                approvalStatus={ownerApprovalStatus} approvalNote={ownerApprovalNote}
                 section={ownerSection} setSection={setOwnerSection} freshLoginUnlocked={ownerPinUnlocked}
-                onAuth={() => setAuthOpen({ mode: 'login', portal: 'owner' })} onList={() => setListOpen(true)} onLogout={logout} />
+                onAuth={() => setAuthOpen({ mode: 'login', portal: 'owner' })} onList={() => openListWizard()} onLogout={logout} />
             </div>
           </div>
         )}
@@ -792,6 +922,10 @@ export default function App() {
                 adminSessionUser={adminSessionUser} onAdminLogout={adminLogout}
                 apiIds={apiIds} onApiVerify={handleApiVerify} onApiDelete={handleApiDelete}
                 onApiApprove={handleApiApprove} onApiReject={handleApiReject} onApiUpdate={handleApiUpdate}
+                onApiApproveOwner={handleApiApproveOwner} onApiRejectOwner={handleApiRejectOwner}
+                onApiHoldOwner={handleApiHoldOwner} onApiUnholdOwner={handleApiUnholdOwner}
+                onApiRenameOwner={handleApiRenameOwner} onApiAdminCreateListing={handleApiAdminCreateListing}
+                onRequestsBadge={setRequestsBadge}
                 onRefreshListings={refreshListings}
                 section={adminSection} setSection={setAdminSection}
                 onOpenAuth={(portal) => setAuthOpen({ mode: 'login', portal })} />
@@ -808,7 +942,7 @@ export default function App() {
       <nav className="bottom-bar" aria-label="Mobile">
         <button className={view === 'home' ? 'active' : ''} onClick={() => go('home')}><span className="bb-icon"><Home size={20} /></span>Home</button>
         <button className={view === 'bookings' ? 'active' : ''} onClick={() => go('bookings')}><span className="bb-icon"><BookOpen size={20} /></span>Bookings</button>
-        <button className="bb-fab" onClick={() => setListOpen(true)} aria-label="List PG free"><span><Plus size={26} /></span>List PG</button>
+        <button className="bb-fab" onClick={() => openListWizard()} aria-label="List PG free"><span><Plus size={26} /></span>List PG</button>
         <button className={view === 'owner' ? 'active' : ''} onClick={() => go('owner')}><span className="bb-icon"><Building2 size={20} /></span>Owner</button>
       </nav>
 
@@ -858,6 +992,13 @@ export default function App() {
         <ListPGWizard db={db} sessionUser={sessionUser} onClose={() => setListOpen(false)}
           showToast={showToast}
           onCreate={async (p: Property) => {
+            // Defence in depth: an unapproved owner must never create a
+            // listing, even if the wizard was already open when approval
+            // lapsed. (API mode also 403s this on the server.)
+            if (sessionUser?.role === 'owner' && !ownerApproved) {
+              showToast('Admin approval ka intezaar hai — approval milte hi PG list kar sakoge.')
+              return
+            }
             // API mode + logged-in owner: listing backend par banao. Guest
             // (bina login) ya network fail par purana local behaviour.
             if (apiConfigured() && getToken()) {
@@ -1663,6 +1804,10 @@ function OwnerView(props: {
   /** Owner verification (API: GET /api/owner/me; local: user.verifiedOwner). */
   ownerVerified: boolean
   refreshOwnerVerified: () => void
+  /** Owner registration approval (API: GET /api/owner/me approval_status;
+      local: user.approvalStatus, grandfathered 'approved'). */
+  approvalStatus: ApprovalStatus
+  approvalNote?: string
   section: OwnerSection; setSection: (s: OwnerSection) => void
   // True right after a fresh password login/signup: the owner already proved
   // who they are, so the Portal PIN is not asked again for this session.
@@ -2142,6 +2287,52 @@ function OwnerView(props: {
       <section className="section container">
         <h2>Makan Malik Portal</h2>
         <div className="empty"><p>Aapka account tenant ka hai. Owner portal ke liye owner account se login karein.</p></div>
+      </section>
+    )
+  }
+
+  // Owner registration approval gate: a pending / hold / rejected owner
+  // sees a waiting screen and CANNOT use any portal section (PG Management,
+  // Tenants, Payments, Documents, Mess) until Super Admin approves. The
+  // sidebar stays visible but every section shows this same screen.
+  if (props.approvalStatus !== 'approved') {
+    const st = props.approvalStatus
+    return (
+      <section className="section container">
+        <h2>Namaste, {sessionUser.name} ji — Makan Malik Portal</h2>
+        <p className="muted">Aapka owner account Super Admin ki approval ka intezaar kar raha hai.</p>
+        <div className="panel" style={{ background: st === 'rejected' ? '#fde8e8' : '#fef3c7', textAlign: 'center', padding: '28px 18px' }}>
+          {st === 'pending' && (
+            <>
+              <ShieldAlert size={40} color="#b45309" />
+              <h3 style={{ margin: '12px 0 6px' }}>Admin approval ka intezaar hai</h3>
+              <p className="muted" style={{ margin: 0 }}>Aapki registration Super Admin ko bhej di gayi hai. Approval milte hi aap PG list kar sakoge aur PG Management, Tenants, Payments, Documents aur Mess — poora suite — khul jayega.</p>
+            </>
+          )}
+          {st === 'hold' && (
+            <>
+              <ShieldAlert size={40} color="#c2410c" />
+              <h3 style={{ margin: '12px 0 6px' }}>On Hold</h3>
+              <p className="muted" style={{ margin: 0 }}>Super Admin ne aapki registration abhi hold par rakhi hai.</p>
+              {props.approvalNote && <p style={{ margin: '10px 0 0' }}><b>Admin ka note:</b> {props.approvalNote}</p>}
+            </>
+          )}
+          {st === 'rejected' && (
+            <>
+              <X size={40} color="#b3261e" />
+              <h3 style={{ margin: '12px 0 6px' }}>Rejected</h3>
+              <p className="muted" style={{ margin: 0 }}>Super Admin ne aapki registration reject kar di hai.</p>
+              {props.approvalNote && <p style={{ margin: '10px 0 0' }}><b>Reason:</b> {props.approvalNote}</p>}
+            </>
+          )}
+          <button className="btn" style={{ marginTop: 18 }} onClick={() => { props.refreshOwnerVerified(); props.showToast('Approval status dobara check kar rahe hain…') }}>
+            Status Dobara Check Karo
+          </button>
+        </div>
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>Locked sections</h3>
+          <p className="muted small" style={{ marginBottom: 0 }}>PG Management • Tenants • Payments • Documents • Mess — ye sab approval ke baad khulenge. Tab tak aap logout karke dobara login kar sakte ho.</p>
+        </div>
       </section>
     )
   }
@@ -2735,6 +2926,16 @@ function AdminView(props: {
   onApiApprove: (id: string) => Promise<boolean>
   onApiReject: (id: string, reason: string) => Promise<boolean>
   onApiUpdate: (id: string, body: Record<string, unknown>) => Promise<boolean>
+  /** Owner registration approval (API): approve / reject / hold / unhold / rename. */
+  onApiApproveOwner: (id: string) => Promise<boolean>
+  onApiRejectOwner: (id: string, reason: string) => Promise<boolean>
+  onApiHoldOwner: (id: string, note: string) => Promise<boolean>
+  onApiUnholdOwner: (id: string) => Promise<boolean>
+  onApiRenameOwner: (id: string, name: string) => Promise<boolean>
+  /** Admin adds a PG directly (API): live + verified immediately. */
+  onApiAdminCreateListing: (body: Record<string, unknown>) => Promise<boolean>
+  /** Reports the "New Requests" pending count up to the App sidebar badge. */
+  onRequestsBadge?: (n: number) => void
   onRefreshListings: () => Promise<void>
   section: AdminSection; setSection: (s: AdminSection) => void
   onOpenAuth: (portal: 'user' | 'owner' | 'admin') => void
@@ -2750,6 +2951,20 @@ function AdminView(props: {
   /** Admin API data (null = local mode / not loaded yet → use db.properties). */
   const [adminListings, setAdminListings] = useState<Property[] | null>(null)
   const [adminOwnersList, setAdminOwnersList] = useState<AdminOwner[] | null>(null)
+  /** New Requests queue (API mode: GET /api/admin/requests; null = local mode). */
+  const [adminRequests, setAdminRequests] = useState<{ owners: AdminOwner[]; listings: Property[] } | null>(null)
+  const [adminOverview, setAdminOverview] = useState<{ pending_owner_requests?: number; pending_listings?: number } | null>(null)
+  /** Owner-request edit: which owner row is being renamed (null = none). */
+  const [editingOwnerId, setEditingOwnerId] = useState<string | null>(null)
+  const [editingOwnerName, setEditingOwnerName] = useState('')
+  /** Admin Add PG form fields. */
+  const [addPgName, setAddPgName] = useState('')
+  const [addPgArea, setAddPgArea] = useState('Matwari')
+  const [addPgCity, setAddPgCity] = useState<City>('Hazaribagh')
+  const [addPgGender, setAddPgGender] = useState<Gender>('Boys')
+  const [addPgRent, setAddPgRent] = useState('')
+  const [addPgBeds, setAddPgBeds] = useState('')
+  const [addPgContact, setAddPgContact] = useState('')
   /** PG Details view: search + filters + selected PG. */
   const [pgSearch, setPgSearch] = useState('')
   const [pgStatus, setPgStatus] = useState<'All' | 'pending' | 'live' | 'rejected'>('All')
@@ -2770,17 +2985,54 @@ function AdminView(props: {
   const unverifiedList = adminProps.filter((p) => !p.verified)
   const pendingList = adminProps.filter((p) => p.status === 'pending')
   /** Owners directory: server list in API mode, else local owner accounts. */
-  const adminOwnersView: { id: string; name: string; phone: string; verifiedOwner: boolean; pgCount: number }[] =
+  const adminOwnersView: { id: string; name: string; phone: string; verifiedOwner: boolean; pgCount: number; approvalStatus: ApprovalStatus; approvalNote?: string }[] =
     adminOwnersList !== null
       ? adminOwnersList.map((o) => ({
           id: String(o.id), name: o.name, phone: o.whatsapp,
           verifiedOwner: o.verified_owner,
           pgCount: o.listings_count ?? adminProps.filter((p) => p.ownerId === String(o.id) || p.ownerPhone === o.whatsapp).length,
+          approvalStatus: o.approval_status ?? 'approved',
+          approvalNote: o.approval_note ?? undefined,
         }))
       : owners.map((o) => ({
           id: o.id, name: o.name, phone: o.phone, verifiedOwner: o.verifiedOwner ?? false,
           pgCount: adminProps.filter((p) => p.ownerPhone === o.phone || p.ownerId === o.id).length,
+          approvalStatus: approvalStatusOf(o),
+          approvalNote: o.approvalNote,
         }))
+
+  /** New Requests queue: owner registrations (API: /api/admin/requests;
+      local: owners whose approvalStatus is not 'approved') + pending PG
+      listings (API: listing_requests; local: the pending list). */
+  const ownerRequests: { id: string; name: string; phone: string; createdAt?: string; approvalStatus: ApprovalStatus; approvalNote?: string; verifiedOwner: boolean }[] =
+    adminRequests !== null
+      ? adminRequests.owners.map((o) => ({
+          id: String(o.id), name: o.name, phone: o.whatsapp, createdAt: o.created_at,
+          approvalStatus: o.approval_status ?? 'approved', approvalNote: o.approval_note ?? undefined,
+          verifiedOwner: o.verified_owner,
+        }))
+      : owners.filter((o) => approvalStatusOf(o) !== 'approved').map((o) => ({
+          id: o.id, name: o.name, phone: o.phone, createdAt: o.createdAt,
+          approvalStatus: approvalStatusOf(o), approvalNote: o.approvalNote,
+          verifiedOwner: o.verifiedOwner ?? false,
+        }))
+  const ownerRequestsSorted = [...ownerRequests].sort((a, b) => {
+    const rank = (s: ApprovalStatus) => (s === 'pending' ? 0 : s === 'hold' ? 1 : s === 'rejected' ? 2 : 3)
+    return rank(a.approvalStatus) - rank(b.approvalStatus) || (b.createdAt ?? '').localeCompare(a.createdAt ?? '')
+  })
+  const listingRequests: Property[] = adminRequests !== null ? adminRequests.listings : pendingList
+  /** Pending counts for the sidebar badge + dashboard tile. */
+  const pendingOwnerCount = adminOverview?.pending_owner_requests
+    ?? ownerRequests.filter((o) => o.approvalStatus === 'pending').length
+  const pendingListingCount = adminOverview?.pending_listings
+    ?? (adminRequests !== null ? adminRequests.listings.length : pendingList.length)
+  const requestsTotal = pendingOwnerCount + pendingListingCount
+
+  // Report the New Requests pending count to the App sidebar badge.
+  useEffect(() => {
+    props.onRequestsBadge?.(requestsTotal)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestsTotal])
 
   async function loadAdminListings() {
     if (!apiConfigured()) { setAdminListings(null); return }
@@ -2802,11 +3054,28 @@ function AdminView(props: {
     }
   }
 
+  async function loadAdminRequests() {
+    if (!apiConfigured()) { setAdminRequests(null); setAdminOverview(null); return }
+    try {
+      const res = await apiGetAdminRequests()
+      setAdminRequests({ owners: res.owner_requests, listings: res.listing_requests.map(apiListingToProperty) })
+    } catch {
+      // Endpoint not deployed yet — fall back to local data.
+      setAdminRequests(null)
+    }
+    try {
+      setAdminOverview(await apiGetAdminOverview())
+    } catch {
+      setAdminOverview(null)
+    }
+  }
+
   // API mode: load the admin lists when an admin section that needs them opens.
   useEffect(() => {
     if (!isAdminIn || !apiConfigured()) return
     if (['pending', 'pgdetails', 'all', 'verified', 'unverified', 'dashboard'].includes(props.section)) void loadAdminListings()
     if (props.section === 'owners') void loadAdminOwners()
+    if (props.section === 'requests' || props.section === 'dashboard') void loadAdminRequests()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.section, isAdminIn])
 
@@ -2851,13 +3120,15 @@ function AdminView(props: {
     props.showToast('PG reject kar diya gaya — owner ko reason dikhega.')
   }
 
-  /** Verify / unverify an owner (API or local). */
+  /** Verify / unverify an owner (API or local). Contract: verified=true
+      also marks the owner approved. */
   async function verifyOwnerToggle(o: { id: string; phone: string; verifiedOwner: boolean }) {
     const next = !o.verifiedOwner
     if (apiConfigured() && adminOwnersList !== null) {
       try {
         await apiVerifyOwner(o.id, next)
         await loadAdminOwners()
+        await loadAdminRequests()
         props.showToast(next ? 'Owner verify ho gaya.' : 'Owner unverified kar diya gaya.')
       } catch (err) {
         props.showToast(apiErrorMessage(err))
@@ -2866,10 +3137,124 @@ function AdminView(props: {
     }
     props.update((d) => {
       const u = d.users.find((x) => x.id === o.id || x.phone === o.phone)
-      if (u) u.verifiedOwner = next
+      if (u) {
+        u.verifiedOwner = next
+        if (next) { u.approvalStatus = 'approved'; u.approvalNote = undefined }
+      }
       return d
     })
     props.showToast(next ? 'Owner verify ho gaya.' : 'Owner unverified kar diya gaya.')
+  }
+
+  /** Owner approval-status badge (pending amber / hold orange / rejected red). */
+  function approvalBadge(s: ApprovalStatus) {
+    if (s === 'pending') return <span className="badge badge-pending"><ShieldAlert size={12} /> Pending approval</span>
+    if (s === 'hold') return <span className="badge badge-hold"><ShieldAlert size={12} /> On Hold</span>
+    if (s === 'rejected') return <span className="badge badge-rejected"><X size={12} /> Rejected</span>
+    return <span className="badge badge-verified"><ShieldCheck size={12} /> Approved</span>
+  }
+
+  /** Admin data live? (API mode + an admin list already loaded from the
+      server.) Otherwise the local db is the source of truth. */
+  const apiAdminLive = apiConfigured() && (adminRequests !== null || adminOwnersList !== null)
+
+  /** Owner registration approval actions (API or local). Approving unlocks
+      the owner's full suite and marks them verified. */
+  async function approveOwnerReq(o: { id: string }) {
+    if (apiAdminLive) {
+      if (await props.onApiApproveOwner(o.id)) { await loadAdminRequests(); await loadAdminOwners() }
+      return
+    }
+    props.update((d) => {
+      const u = d.users.find((x) => x.id === o.id)
+      if (u) { u.approvalStatus = 'approved'; u.approvalNote = undefined; u.verifiedOwner = true }
+      return d
+    })
+    props.showToast('Owner approve ho gaya — ab full suite unlock hai, owner verified bhi ho gaya.')
+  }
+  async function rejectOwnerReq(o: { id: string; name: string }) {
+    const reason = window.prompt(`"${o.name}" reject karne ka reason likho (owner ko dikhega):`, '')
+    if (reason === null) return
+    const finalReason = reason.trim() || 'Admin ne reject kiya — details check karke dobara register karo.'
+    if (apiAdminLive) {
+      if (await props.onApiRejectOwner(o.id, finalReason)) { await loadAdminRequests(); await loadAdminOwners() }
+      return
+    }
+    props.update((d) => {
+      const u = d.users.find((x) => x.id === o.id)
+      if (u) { u.approvalStatus = 'rejected'; u.approvalNote = finalReason }
+      return d
+    })
+    props.showToast('Owner reject kar diya gaya — owner ko reason dikhega.')
+  }
+  async function holdOwnerReq(o: { id: string; name: string }) {
+    const note = window.prompt(`"${o.name}" hold par rakhne ka note likho (owner ko dikhega):`, '')
+    if (note === null) return
+    const finalNote = note.trim() || 'Admin ne registration hold par rakhi hai — thoda intezaar karo.'
+    if (apiAdminLive) {
+      if (await props.onApiHoldOwner(o.id, finalNote)) { await loadAdminRequests(); await loadAdminOwners() }
+      return
+    }
+    props.update((d) => {
+      const u = d.users.find((x) => x.id === o.id)
+      if (u) { u.approvalStatus = 'hold'; u.approvalNote = finalNote }
+      return d
+    })
+    props.showToast('Owner On Hold kar diya gaya — owner ko note dikhega.')
+  }
+  async function unholdOwnerReq(o: { id: string }) {
+    if (apiAdminLive) {
+      if (await props.onApiUnholdOwner(o.id)) { await loadAdminRequests(); await loadAdminOwners() }
+      return
+    }
+    props.update((d) => {
+      const u = d.users.find((x) => x.id === o.id)
+      if (u) { u.approvalStatus = 'pending'; u.approvalNote = undefined }
+      return d
+    })
+    props.showToast('Owner wapas Pending pe aa gaya.')
+  }
+  async function saveOwnerName(o: { id: string }) {
+    const name = editingOwnerName.trim()
+    if (!name) return props.showToast('Owner ka naam daalein')
+    if (apiAdminLive) {
+      if (await props.onApiRenameOwner(o.id, name)) { await loadAdminRequests(); await loadAdminOwners(); setEditingOwnerId(null) }
+      return
+    }
+    props.update((d) => {
+      const u = d.users.find((x) => x.id === o.id)
+      if (u) u.name = name
+      return d
+    })
+    setEditingOwnerId(null)
+    props.showToast('Owner ka naam update ho gaya.')
+  }
+
+  /** Admin adds a PG directly — live + verified immediately (API or local). */
+  async function adminCreatePG() {
+    const ph = addPgContact.replace(/\D/g, '').slice(-10)
+    const rent = Number(addPgRent)
+    const beds = Number(addPgBeds)
+    if (!addPgName.trim() || !addPgArea.trim()) return props.showToast('PG ka naam aur area daalein')
+    if (ph.length !== 10) return props.showToast('Sahi 10-digit contact number daalein')
+    if (!rent || rent <= 0 || !beds || beds <= 0) return props.showToast('Sahi rent aur beds daalein')
+    const p: Property = {
+      id: uid(), ownerId: 'admin', ownerPhone: ph, name: addPgName.trim(), city: addPgCity,
+      locality: addPgArea.trim(), address: `${addPgArea.trim()}, ${addPgCity}`, gender: addPgGender,
+      rent, deposit: 0, foodIncluded: false, totalBeds: beds, availableBeds: beds, sharing: 'Double',
+      facilities: [], rules: '', verified: true, status: 'live', createdAt: new Date().toISOString(),
+    }
+    if (apiConfigured()) {
+      const ok = await props.onApiAdminCreateListing(propertyToApiListing(p))
+      if (ok) {
+        setAddPgName(''); setAddPgRent(''); setAddPgBeds(''); setAddPgContact('')
+        await loadAdminListings()
+      }
+      return
+    }
+    props.update((d) => { d.properties.push(p); return d })
+    setAddPgName(''); setAddPgRent(''); setAddPgBeds(''); setAddPgContact('')
+    props.showToast('PG live ho gaya — Verified badge ke saath.')
   }
 
   /** Approval-status badge for a listing. */
@@ -2917,6 +3302,58 @@ function AdminView(props: {
           }}>Delete</button>
         </div>
       </div>
+    )
+  }
+
+  /** Shared PG detail + edit panel (used by PG Details and New Requests). */
+  function adminPgDetail() {
+    if (!selectedAdminPg) return null
+    const p = selectedAdminPg
+    return (
+      <AdminPGDetail
+        p={p}
+        editing={editingAdminId === p.id}
+        onToggleEdit={() => setEditingAdminId(editingAdminId === p.id ? null : p.id)}
+        onClose={() => { setSelectedAdminPg(null); setEditingAdminId(null) }}
+        showToast={props.showToast}
+        onApprove={() => void approvePG(p)}
+        onReject={() => void rejectPG(p)}
+        onVerify={async () => {
+          if (props.apiIds.has(p.id) || adminListings !== null) {
+            await props.onApiVerify(p.id, !p.verified)
+            await loadAdminListings()
+            setSelectedAdminPg((cur) => (cur ? { ...cur, verified: !cur.verified } : cur))
+            return
+          }
+          props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) x.verified = !x.verified; return d })
+          setSelectedAdminPg((cur) => (cur ? { ...cur, verified: !cur.verified } : cur))
+        }}
+        onDelete={async () => {
+          if (!confirm(`"${p.name}" delete karna hai?`)) return
+          if (props.apiIds.has(p.id) || adminListings !== null) {
+            await props.onApiDelete(p.id)
+            await loadAdminListings()
+          } else {
+            props.update((d) => { d.properties = d.properties.filter((y) => y.id !== p.id); return d })
+          }
+          setSelectedAdminPg(null)
+        }}
+        onSave={async (patch) => {
+          if (props.apiIds.has(p.id) || adminListings !== null) {
+            const ok = await props.onApiUpdate(p.id, propertyToApiListing({ ...p, ...patch }))
+            if (ok) {
+              await loadAdminListings()
+              setSelectedAdminPg((cur) => (cur ? { ...cur, ...patch } : cur))
+              setEditingAdminId(null)
+            }
+            return
+          }
+          props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) Object.assign(x, patch); return d })
+          setSelectedAdminPg((cur) => (cur ? { ...cur, ...patch } : cur))
+          setEditingAdminId(null)
+          props.showToast('PG update ho gaya.')
+        }}
+      />
     )
   }
 
@@ -3062,6 +3499,7 @@ function AdminView(props: {
               <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{adminProps.length}</b><span>Total PGs</span></div>
               <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{verifiedList.length}</b><span>Verified</span></div>
               <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{pendingList.length}</b><span>Pending approval</span></div>
+              <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{pendingOwnerCount}</b><span>Owner requests</span></div>
               <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.enquiries.length}</b><span>Enquiries</span></div>
             </div>
             <div className="panel">
@@ -3073,7 +3511,8 @@ function AdminView(props: {
             <div className="panel">
               <h3 style={{ marginTop: 0 }}>Aaj kya karein?</h3>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button className="btn btn-orange" onClick={() => props.setSection('pending')}><ShieldAlert size={16} /> Approval Queue — {pendingList.length} pending</button>
+                <button className="btn btn-orange" onClick={() => props.setSection('requests')}><ShieldAlert size={16} /> New Requests — {requestsTotal} pending</button>
+                <button className="btn btn-ghost" onClick={() => props.setSection('pending')}><ShieldAlert size={16} /> Approval Queue — {pendingList.length} pending</button>
                 <button className="btn btn-ghost" onClick={() => props.setSection('owners')}><Users size={16} /> Owners ({owners.length})</button>
                 <button className="btn btn-ghost" onClick={() => props.setSection('enquiries')}><MessageSquare size={16} /> Enquiries ({db.enquiries.length})</button>
                 <button className="btn btn-ghost" onClick={() => props.setSection('complaints')}><ClipboardList size={16} /> Complaints ({db.complaints.filter((c) => c.status === 'Open').length} open)</button>
@@ -3156,55 +3595,99 @@ function AdminView(props: {
                 <button className="btn btn-sm" onClick={() => { setSelectedAdminPg(p); setEditingAdminId(null) }}>Details Dekho</button>
               </div>
             ))}
-            {selectedAdminPg && (
-              <AdminPGDetail
-                p={selectedAdminPg}
-                editing={editingAdminId === selectedAdminPg.id}
-                onToggleEdit={() => setEditingAdminId(editingAdminId === selectedAdminPg.id ? null : selectedAdminPg.id)}
-                onClose={() => { setSelectedAdminPg(null); setEditingAdminId(null) }}
-                showToast={props.showToast}
-                onApprove={() => void approvePG(selectedAdminPg)}
-                onReject={() => void rejectPG(selectedAdminPg)}
-                onVerify={async () => {
-                  const p = selectedAdminPg
-                  if (props.apiIds.has(p.id) || adminListings !== null) {
-                    await props.onApiVerify(p.id, !p.verified)
-                    await loadAdminListings()
-                    setSelectedAdminPg((cur) => (cur ? { ...cur, verified: !cur.verified } : cur))
-                    return
-                  }
-                  props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) x.verified = !x.verified; return d })
-                  setSelectedAdminPg((cur) => (cur ? { ...cur, verified: !cur.verified } : cur))
-                }}
-                onDelete={async () => {
-                  const p = selectedAdminPg
-                  if (!confirm(`"${p.name}" delete karna hai?`)) return
-                  if (props.apiIds.has(p.id) || adminListings !== null) {
-                    await props.onApiDelete(p.id)
-                    await loadAdminListings()
-                  } else {
-                    props.update((d) => { d.properties = d.properties.filter((y) => y.id !== p.id); return d })
-                  }
-                  setSelectedAdminPg(null)
-                }}
-                onSave={async (patch) => {
-                  const p = selectedAdminPg
-                  if (props.apiIds.has(p.id) || adminListings !== null) {
-                    const ok = await props.onApiUpdate(p.id, propertyToApiListing({ ...p, ...patch }))
-                    if (ok) {
-                      await loadAdminListings()
-                      setSelectedAdminPg((cur) => (cur ? { ...cur, ...patch } : cur))
-                      setEditingAdminId(null)
-                    }
-                    return
-                  }
-                  props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) Object.assign(x, patch); return d })
-                  setSelectedAdminPg((cur) => (cur ? { ...cur, ...patch } : cur))
-                  setEditingAdminId(null)
-                  props.showToast('PG update ho gaya.')
-                }}
-              />
-            )}
+            {adminPgDetail()}
+          </div>
+        )}
+
+        {props.section === 'requests' && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>New Requests ({requestsTotal} pending)</h3>
+            <p className="muted small">Naye owner registrations aur pending PG listings — ek hi queue. Approve karne se pehle details edit kar sakte ho; owner approve karte hi uska full suite khulta hai, PG approve karte hi wo live + Verified ho jata hai.</p>
+            <h4>Owner registrations ({ownerRequestsSorted.length})</h4>
+            {ownerRequestsSorted.length === 0 && <p className="muted">Koi nayi owner registration nahi hai. 🎉</p>}
+            {ownerRequestsSorted.map((o) => (
+              <div className="review" key={o.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                  <b>{o.name}</b> — {o.phone} {approvalBadge(o.approvalStatus)}<br />
+                  <span className="muted small">Registered: {o.createdAt ? timeAgo(o.createdAt) : '—'}{o.verifiedOwner ? ' • Verified Owner' : ''}</span>
+                  {o.approvalNote && <><br /><span className="small" style={{ color: o.approvalStatus === 'rejected' ? '#b3261e' : '#b45309' }}>Admin note: {o.approvalNote}</span></>}
+                  {editingOwnerId === o.id && (
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                      <input value={editingOwnerName} onChange={(e) => setEditingOwnerName(e.target.value)} placeholder="Owner ka naam" style={{ maxWidth: 240 }} />
+                      <button className="btn btn-sm" onClick={() => void saveOwnerName(o)}>Save</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setEditingOwnerId(null)}>Cancel</button>
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {o.approvalStatus !== 'approved' && (
+                    <button className="btn btn-sm" style={{ background: '#0e7a5f', color: '#fff' }} onClick={() => void approveOwnerReq(o)}>Approve ✓</button>
+                  )}
+                  {o.approvalStatus === 'hold'
+                    ? <button className="btn btn-sm" onClick={() => void unholdOwnerReq(o)}>Unhold</button>
+                    : o.approvalStatus !== 'approved' && <button className="btn btn-sm" onClick={() => void holdOwnerReq(o)}>Hold</button>}
+                  {o.approvalStatus !== 'approved' && o.approvalStatus !== 'rejected' && (
+                    <button className="btn btn-danger btn-sm" onClick={() => void rejectOwnerReq(o)}>Reject</button>
+                  )}
+                  <button className="btn btn-ghost btn-sm" onClick={() => { setEditingOwnerId(o.id); setEditingOwnerName(o.name) }}>Edit Naam</button>
+                </div>
+              </div>
+            ))}
+            <h4 style={{ marginTop: 20 }}>Pending PG listings ({listingRequests.length})</h4>
+            {listingRequests.length === 0 && <p className="muted">Koi PG approval ke liye pending nahi hai. 🎉</p>}
+            {listingRequests.map((p) => (
+              <div key={p.id}>
+                {listingRow(p)}
+                <button className="btn btn-ghost btn-sm" style={{ margin: '0 0 10px' }} onClick={() => { setSelectedAdminPg(p); setEditingAdminId(null) }}>Details / Edit Karo</button>
+              </div>
+            ))}
+            {adminPgDetail()}
+          </div>
+        )}
+
+        {props.section === 'addpg' && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>Admin se PG add karo</h3>
+            <p className="muted small">Ye PG turant <b>live + Verified</b> ho jayega — koi approval queue nahi. Sirf tab use karo jab PG aap khud add kar rahe ho.</p>
+            <div className="form-grid-2">
+              <div>
+                <label>PG ka naam</label>
+                <input value={addPgName} onChange={(e) => setAddPgName(e.target.value)} placeholder="Jaise — Shanti Boys PG" />
+              </div>
+              <div>
+                <label>Area / Locality</label>
+                <select value={addPgArea} onChange={(e) => setAddPgArea(e.target.value)}>
+                  {LOCALITIES[addPgCity].map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+              <div>
+                <label>City</label>
+                <div className="segmented">
+                  {(['Hazaribagh', 'Ranchi'] as City[]).map((c) => (
+                    <button key={c} type="button" className={addPgCity === c ? 'active' : ''} onClick={() => { setAddPgCity(c); setAddPgArea(LOCALITIES[c][0]) }}>{c}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label>Kaun ke liye</label>
+                <div className="segmented">
+                  {(['Boys', 'Girls', 'Co-ed'] as Gender[]).map((g) => (
+                    <button key={g} type="button" className={addPgGender === g ? 'active' : ''} onClick={() => setAddPgGender(g)}>{g}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label>Monthly rent per bed (₹)</label>
+                <input value={addPgRent} onChange={(e) => setAddPgRent(e.target.value)} inputMode="numeric" placeholder="Jaise — 3500" />
+              </div>
+              <div>
+                <label>Total beds</label>
+                <input value={addPgBeds} onChange={(e) => setAddPgBeds(e.target.value)} inputMode="numeric" placeholder="Jaise — 10" />
+              </div>
+            </div>
+            <label>Contact (WhatsApp)</label>
+            <input value={addPgContact} onChange={(e) => setAddPgContact(e.target.value)} inputMode="tel" placeholder="10-digit number" />
+            <button className="btn btn-orange" style={{ marginTop: 16 }} onClick={() => void adminCreatePG()}><Plus size={18} /> PG Live Karo — Verified</button>
           </div>
         )}
 
@@ -3217,7 +3700,7 @@ function AdminView(props: {
               <thead><tr><th>Owner</th><th>Phone</th><th>PGs</th><th>PIN</th><th>Verification</th></tr></thead>
               <tbody>{adminOwnersView.map((o) => (
                 <tr key={o.id}>
-                  <td>{o.name} {o.verifiedOwner && <span className="badge badge-verified"><ShieldCheck size={12} /> Verified Owner</span>}</td>
+                  <td>{o.name} {approvalBadge(o.approvalStatus)} {o.verifiedOwner && <span className="badge badge-verified"><ShieldCheck size={12} /> Verified Owner</span>}</td>
                   <td>{o.phone}</td>
                   <td>{o.pgCount}</td>
                   <td>{adminOwnersList === null && owners.find((x) => x.id === o.id)?.pinHash ? 'Set hai' : adminOwnersList === null ? 'Nahi set' : '—'}</td>

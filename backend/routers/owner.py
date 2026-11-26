@@ -73,6 +73,8 @@ def me(owner: models.User = Depends(get_current_owner)):
     return schemas.OwnerMeResponse(
         id=owner.id, name=owner.name, whatsapp=owner.whatsapp,
         role=owner.role, verified_owner=bool(owner.verified_owner),
+        approval_status=owner.approval_status or "approved",
+        approval_note=owner.approval_note,
     )
 
 

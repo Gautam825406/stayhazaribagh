@@ -39,11 +39,15 @@ def register(body: schemas.RegisterRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_409_CONFLICT,
             detail="An account with this WhatsApp number already exists",
         )
+    # Owner signups start pending — Super Admin approves them in the
+    # New Requests queue. Tenants are never approval-gated.
+    approval = "pending" if body.role == "owner" else "approved"
     user = models.User(
         name=body.name,
         whatsapp=body.whatsapp,
         password_hash=hash_password(body.password),
         role=body.role,
+        approval_status=approval,
     )
     db.add(user)
     db.commit()
@@ -55,6 +59,7 @@ def register(body: schemas.RegisterRequest, db: Session = Depends(get_db)):
         role=user.role,
         user_id=user.id,
         name=user.name,
+        approval_status=user.approval_status,
     )
 
 
@@ -87,6 +92,7 @@ def login(body: schemas.LoginRequest, db: Session = Depends(get_db)):
         role=user.role,
         user_id=user.id,
         name=user.name,
+        approval_status=user.approval_status,
     )
 
 
@@ -226,4 +232,5 @@ def pin_login(body: schemas.PinLoginRequest, db: Session = Depends(get_db)):
         role=user.role,
         user_id=user.id,
         name=user.name,
+        approval_status=user.approval_status,
     )

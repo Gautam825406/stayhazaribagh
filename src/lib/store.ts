@@ -6,6 +6,10 @@ export type Role = 'tenant' | 'owner'
 export type City = 'Hazaribagh' | 'Ranchi'
 export type Gender = 'Boys' | 'Girls' | 'Co-ed'
 
+/** Owner registration approval: a new owner starts 'pending' and only goes
+    live once Super Admin approves. Tenants are always 'approved'. */
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'hold'
+
 export interface User {
   id: string
   name: string
@@ -17,7 +21,17 @@ export interface User {
   pinHash?: string // owner portal PIN (hashed)
   /** True once Super Admin verifies the owner (or their first PG is approved). */
   verifiedOwner?: boolean
+  /** Owner approval (see ApprovalStatus). Missing = grandfathered 'approved'
+      — existing saved users are never locked out by this field. */
+  approvalStatus?: ApprovalStatus
+  /** Admin's note/reason for 'hold' / 'rejected' — shown to the owner. */
+  approvalNote?: string
   createdAt: string
+}
+
+/** Effective approval status: missing field = 'approved' (grandfathered). */
+export function approvalStatusOf(u: User | null | undefined): ApprovalStatus {
+  return u?.approvalStatus ?? 'approved'
 }
 
 export interface Property {
@@ -226,16 +240,24 @@ export function loadDB(): DB {
     const parsed = JSON.parse(raw) as Partial<DB>
     // Merge over emptyDB() so old saved data (without the newer arrays)
     // still loads instead of crashing on undefined.
-    return {
+    const db: DB = {
       ...emptyDB(),
       ...parsed,
       settings: { ...emptyDB().settings, ...(parsed.settings || {}) },
+      users: (parsed.users ?? []).map((u) => ({
+        // Grandfathered: saved users without an approvalStatus were created
+        // before owner approval existed — they stay 'approved' (never lock
+        // anyone out). Tenants are always 'approved'.
+        ...u,
+        approvalStatus: u.approvalStatus ?? 'approved',
+      })),
       tenants: (parsed.tenants ?? []).map((t) => ({ ...t })),
       rentPayments: parsed.rentPayments ?? [],
       documents: parsed.documents ?? [],
       messConfigs: parsed.messConfigs ?? {},
       messPayments: parsed.messPayments ?? [],
     }
+    return db
   } catch {
     return emptyDB()
   }

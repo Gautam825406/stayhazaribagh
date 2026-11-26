@@ -71,6 +71,11 @@ def ensure_schema() -> None:
             ("users", "verified_owner",
              "ALTER TABLE users ADD COLUMN verified_owner BOOLEAN "
              "DEFAULT FALSE"),
+            ("users", "approval_status",
+             "ALTER TABLE users ADD COLUMN approval_status VARCHAR(20) "
+             "DEFAULT 'approved'"),
+            ("users", "approval_note",
+             "ALTER TABLE users ADD COLUMN approval_note TEXT"),
             ("rent_records", "method",
              "ALTER TABLE rent_records ADD COLUMN method VARCHAR(10)"),
         ]
@@ -80,6 +85,9 @@ def ensure_schema() -> None:
             ("users",
              "UPDATE users SET verified_owner=FALSE "
              "WHERE verified_owner IS NULL"),
+            ("users",
+             "UPDATE users SET approval_status='approved' "
+             "WHERE approval_status IS NULL"),
         ]
         with engine.begin() as conn:
             for table, column, ddl in missing:

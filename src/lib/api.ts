@@ -102,7 +102,14 @@ export interface ApiUser {
   phone: string
   role: 'tenant' | 'owner'
   email?: string
+  /** Owner registration approval (new contract): 'pending' for new owner
+      signups; tenants are always 'approved'. */
+  approval_status?: ApprovalStatus
+  approval_note?: string | null
 }
+
+/** Owner registration approval status (backend spelling: snake_case). */
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'hold'
 
 export function setStoredUser(user: ApiUser): void {
   try {
@@ -118,12 +125,18 @@ export function getStoredUser(): ApiUser | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<ApiUser>
     if (!parsed.phone || !parsed.name) return null
+    const approval = parsed.approval_status
     return {
       id: parsed.id,
       name: parsed.name,
       phone: parsed.phone,
       role: parsed.role === 'owner' ? 'owner' : 'tenant',
       email: parsed.email,
+      approval_status:
+        approval === 'pending' || approval === 'approved' || approval === 'rejected' || approval === 'hold'
+          ? approval
+          : undefined,
+      approval_note: parsed.approval_note ?? undefined,
     }
   } catch {
     return null
@@ -512,14 +525,27 @@ export function normalizeAuthResponse(
   const token = data.access_token ?? data.token ?? ''
   const u = data.user
   if (!u) {
+    const rawStatus = data.approval_status as string | undefined
     return {
       token,
-      user: { name: fallback.name ?? fallback.phone, phone: fallback.phone, role: fallback.role },
+      user: {
+        name: fallback.name ?? fallback.phone, phone: fallback.phone, role: fallback.role,
+        approval_status:
+          rawStatus === 'pending' || rawStatus === 'approved' || rawStatus === 'rejected' || rawStatus === 'hold'
+            ? rawStatus
+            : undefined,
+        approval_note: typeof data.approval_note === 'string' ? data.approval_note : undefined,
+      },
     }
   }
   // Backend user objects carry `whatsapp`, not `phone` (UserResponse schema).
   const phone = String(u.phone ?? (u as Record<string, unknown>).whatsapp ?? fallback.phone)
   const role = u.role === 'owner' ? 'owner' : 'tenant'
+  const rawStatus = (u.approval_status ?? data.approval_status) as string | undefined
+  const approval_status: ApprovalStatus | undefined =
+    rawStatus === 'pending' || rawStatus === 'approved' || rawStatus === 'rejected' || rawStatus === 'hold'
+      ? rawStatus
+      : undefined
   return {
     token,
     user: {
@@ -528,6 +554,11 @@ export function normalizeAuthResponse(
       phone,
       role,
       email: u.email ? String(u.email) : undefined,
+      approval_status,
+      approval_note:
+        typeof (u.approval_note ?? data.approval_note) === 'string'
+          ? String(u.approval_note ?? data.approval_note)
+          : undefined,
     },
   }
 }
@@ -649,6 +680,9 @@ export interface AdminOwner {
   verified_owner: boolean
   listings_count: number
   created_at?: string
+  /** Owner registration approval (new contract). */
+  approval_status?: ApprovalStatus
+  approval_note?: string | null
 }
 
 /** GET /api/admin/listings — all listings incl. pending/rejected. */
@@ -698,6 +732,87 @@ export async function verifyOwner(id: string | number, verified: boolean): Promi
   })
 }
 
+/* ---------------- owner registration approval (admin) ---------------- */
+
+export interface AdminRequests {
+  owner_requests: AdminOwner[]
+  listing_requests: ApiListing[]
+}
+
+/** GET /api/admin/requests — new owner registrations + pending PG listings. */
+export async function getAdminRequests(): Promise<AdminRequests> {
+  const data = await request<unknown>('/api/admin/requests', { token: 'admin' })
+  const obj = (data ?? {}) as { owner_requests?: AdminOwner[]; listing_requests?: ApiListing[] }
+  return {
+    owner_requests: obj.owner_requests ?? [],
+    listing_requests: obj.listing_requests ?? [],
+  }
+}
+
+/** Approve an owner registration — unlocks the full suite, verified_owner true. */
+export async function approveOwner(id: string | number): Promise<AdminOwner> {
+  return request<AdminOwner>(`/api/admin/owners/${encodeURIComponent(String(id))}/approve`, {
+    method: 'POST',
+    token: 'admin',
+  })
+}
+
+/** Reject an owner registration — the owner sees `reason`. */
+export async function rejectOwner(id: string | number, reason: string): Promise<AdminOwner> {
+  return request<AdminOwner>(`/api/admin/owners/${encodeURIComponent(String(id))}/reject`, {
+    method: 'POST',
+    body: { reason },
+    token: 'admin',
+  })
+}
+
+/** Hold an owner registration — the owner sees `note`. */
+export async function holdOwner(id: string | number, note: string): Promise<AdminOwner> {
+  return request<AdminOwner>(`/api/admin/owners/${encodeURIComponent(String(id))}/hold`, {
+    method: 'POST',
+    body: { note },
+    token: 'admin',
+  })
+}
+
+/** Unhold an owner registration — back to 'pending'. */
+export async function unholdOwner(id: string | number): Promise<AdminOwner> {
+  return request<AdminOwner>(`/api/admin/owners/${encodeURIComponent(String(id))}/unhold`, {
+    method: 'POST',
+    body: {},
+    token: 'admin',
+  })
+}
+
+/** Admin edits an owner's details (name) before approving. */
+export async function updateOwnerName(id: string | number, name: string): Promise<AdminOwner> {
+  return request<AdminOwner>(`/api/admin/owners/${encodeURIComponent(String(id))}`, {
+    method: 'PATCH',
+    body: { name },
+    token: 'admin',
+  })
+}
+
+/** Admin adds a PG directly — goes live + verified immediately. */
+export async function adminCreateListing(body: Record<string, unknown>): Promise<ApiListing> {
+  return request<ApiListing>('/api/admin/listings', { method: 'POST', body, token: 'admin' })
+}
+
+export interface AdminOverview {
+  total_listings?: number
+  verified_listings?: number
+  pending_listings?: number
+  pending_owner_requests?: number
+  total_owners?: number
+  total_tenants?: number
+  [key: string]: unknown
+}
+
+/** GET /api/admin/overview — incl. pending_owner_requests / pending_listings. */
+export async function getAdminOverview(): Promise<AdminOverview> {
+  return request<AdminOverview>('/api/admin/overview', { token: 'admin' })
+}
+
 /* ---------------- owner: verification + summary ---------------- */
 
 export interface OwnerMe {
@@ -706,6 +821,9 @@ export interface OwnerMe {
   whatsapp: string
   role: string
   verified_owner: boolean
+  /** Owner registration approval (new contract). */
+  approval_status?: ApprovalStatus
+  approval_note?: string | null
 }
 
 export async function getOwnerMe(): Promise<OwnerMe> {

@@ -64,11 +64,28 @@ def _admin_token() -> str:
 
 
 def _make_owner(whatsapp: str, name: str = "Owner") -> tuple[str, dict]:
+    """Register an owner. New owners start PENDING (admin approval in
+    the New Requests queue) — use _approve_owner() to approve them."""
     r = client.post("/api/auth/register", json={
         "name": name, "whatsapp": whatsapp,
         "password": "ownerpass", "role": "owner"})
     assert r.status_code == 201
+    assert r.json()["approval_status"] == "pending"
     return r.json()["access_token"], _auth_headers(r.json()["access_token"])
+
+
+def _approve_owner(whatsapp: str) -> dict:
+    """Admin-approve an owner registration (unlocks the full suite)."""
+    admin = _admin_token()
+    ah = _auth_headers(admin)
+    owners = client.get("/api/admin/owners", headers=ah).json()
+    owner = [o for o in owners if o["whatsapp"] == whatsapp][0]
+    r = client.post(f"/api/admin/owners/{owner['id']}/approve", json={},
+                    headers=ah)
+    assert r.status_code == 200
+    assert r.json()["approval_status"] == "approved"
+    assert r.json()["verified_owner"] is True
+    return r.json()
 
 
 def _make_listing(headers: dict, name: str = "PG") -> dict:
@@ -113,6 +130,8 @@ def test_register_login_and_owner_listing_flow():
         "name": "Test Owner", "whatsapp": "919999999999",
         "password": "ownerpass", "role": "owner"})
     assert r.status_code == 201
+    # New owner signups start pending — not live directly.
+    assert r.json()["approval_status"] == "pending"
     token = r.json()["access_token"]
     headers = _auth_headers(token)
 
@@ -120,6 +139,18 @@ def test_register_login_and_owner_listing_flow():
         "name": "Again", "whatsapp": "919999999999",
         "password": "ownerpass", "role": "owner"})
     assert dup.status_code == 409
+
+    # Pending owner cannot list a PG yet (403).
+    r = client.post("/api/listings", json={
+        "name": "Too Early PG", "area": "Korrah", "city": "Hazaribagh",
+        "type": "PG", "for_whom": "Boys", "rent": 3000}, headers=headers)
+    assert r.status_code == 403
+
+    # Admin approves the owner registration -> full suite unlocks.
+    _approve_owner("919999999999")
+    r = client.get("/api/owner/me", headers=headers)
+    assert r.json()["approval_status"] == "approved"
+    assert r.json()["verified_owner"] is True
 
     r = client.post("/api/listings", json={
         "name": "Test PG", "area": "Korrah", "city": "Hazaribagh",
@@ -153,7 +184,7 @@ def test_register_login_and_owner_listing_flow():
     assert r.status_code == 200
     assert r.json()["pending_count"] == 1
     assert r.json()["live_count"] == 0
-    assert r.json()["verified_owner"] is False
+    assert r.json()["verified_owner"] is True  # owner already approved
 
     # Admin approves -> live + verified + visible publicly + owner
     # auto-verified (first live PG).
@@ -250,6 +281,7 @@ def test_seed_count_matches_file():
 # ---------------------------------------------------------------- new: approval workflow
 def test_listing_approve_flow_and_admin_list():
     _, headers = _make_owner("919111111111", "Approve Owner")
+    _approve_owner("919111111111")
     listing = _make_listing(headers, "Approve PG")
     lid = listing["id"]
     assert listing["status"] == "pending"
@@ -280,6 +312,7 @@ def test_listing_approve_flow_and_admin_list():
 
 def test_listing_reject_flow():
     _, headers = _make_owner("919222222222", "Reject Owner")
+    _approve_owner("919222222222")
     listing = _make_listing(headers, "Reject PG")
     lid = listing["id"]
 
@@ -308,6 +341,7 @@ def test_listing_reject_flow():
 
 def test_admin_cannot_change_status_via_patch():
     _, headers = _make_owner("919333333333", "Patch Owner")
+    _approve_owner("919333333333")
     listing = _make_listing(headers, "Patch PG")
     lid = listing["id"]
     admin = _admin_token()
@@ -321,40 +355,54 @@ def test_admin_cannot_change_status_via_patch():
 
 def test_admin_owners_list_and_verify():
     token, headers = _make_owner("919444444444", "Owners List Owner")
-    listing = _make_listing(headers, "Owners List PG")
     admin = _admin_token()
     ah = _auth_headers(admin)
     r = client.get("/api/admin/owners", headers=ah)
     assert r.status_code == 200
     mine = [o for o in r.json() if o["whatsapp"] == "919444444444"]
     assert len(mine) == 1
-    assert mine[0]["listings_count"] == 1
+    assert mine[0]["listings_count"] == 0
     assert mine[0]["verified_owner"] is False
+    assert mine[0]["approval_status"] == "pending"
     owner_id = mine[0]["id"]
+
+    # Admin edits the owner's name before approving.
+    r = client.patch(f"/api/admin/owners/{owner_id}",
+                     json={"name": "Owners List Owner Edited"}, headers=ah)
+    assert r.status_code == 200
+    assert r.json()["name"] == "Owners List Owner Edited"
 
     r = client.post(f"/api/admin/owners/{owner_id}/verify",
                     json={"verified": True}, headers=ah)
     assert r.status_code == 200
     assert r.json()["verified_owner"] is True
+    assert r.json()["approval_status"] == "approved"
     r = client.get("/api/owner/me", headers=headers)
     assert r.json()["verified_owner"] is True
+
+    # Now the approved owner can list a PG.
+    listing = _make_listing(headers, "Owners List PG")
+    r = client.get("/api/admin/owners", headers=ah)
+    mine = [o for o in r.json() if o["whatsapp"] == "919444444444"]
+    assert mine[0]["listings_count"] == 1
 
 
 # ---------------------------------------------------------------- new: verified-owner gate
 def test_tenant_gate_then_verify_then_create():
     _, headers = _make_owner("919555555555", "Gate Owner")
-    listing = _make_listing(headers, "Gate PG")
-    lid = listing["id"]
-    tenant_body = {"listing_id": lid, "name": "Ravi Kumar",
-                   "whatsapp": "918888888881", "room": "101",
-                   "bed": "A", "rent": 3000, "move_in_date": "2026-11-01"}
-
-    # Unverified owner: tenant + rent endpoints are gated (403).
-    r = client.post("/api/owner/tenants", json=tenant_body, headers=headers)
+    # Pending owner: cannot list a PG, and tenant/rent endpoints are
+    # gated (403) until the admin approves the registration.
+    r = client.post("/api/listings", json={
+        "name": "Gate PG", "area": "Korrah", "city": "Hazaribagh",
+        "type": "PG", "for_whom": "Boys", "rent": 3000}, headers=headers)
+    assert r.status_code == 403
+    r = client.post("/api/owner/tenants", json={
+        "listing_id": 1, "name": "Ravi Kumar",
+        "whatsapp": "918888888881"}, headers=headers)
     assert r.status_code == 403
     assert "verification pending" in r.json()["detail"].lower()
     r = client.post("/api/owner/rent", json={
-        "listing_id": lid, "tenant_name": "Ravi Kumar",
+        "listing_id": 1, "tenant_name": "Ravi Kumar",
         "month": "2026-11", "amount": 3000}, headers=headers)
     assert r.status_code == 403
     r = client.get("/api/owner/rent", headers=headers)
@@ -363,15 +411,13 @@ def test_tenant_gate_then_verify_then_create():
     r = client.get("/api/owner/enquiries", headers=headers)
     assert r.status_code == 200
 
-    # Admin verifies the owner -> tenant create succeeds.
-    admin = _admin_token()
-    ah = _auth_headers(admin)
-    owners = client.get("/api/admin/owners", headers=ah).json()
-    owner_id = [o for o in owners
-                if o["whatsapp"] == "919555555555"][0]["id"]
-    r = client.post(f"/api/admin/owners/{owner_id}/verify",
-                    json={"verified": True}, headers=ah)
-    assert r.status_code == 200
+    # Admin approves the owner registration -> full suite unlocks.
+    _approve_owner("919555555555")
+    listing = _make_listing(headers, "Gate PG")
+    lid = listing["id"]
+    tenant_body = {"listing_id": lid, "name": "Ravi Kumar",
+                   "whatsapp": "918888888881", "room": "101",
+                   "bed": "A", "rent": 3000, "move_in_date": "2026-11-01"}
 
     r = client.post("/api/owner/tenants", json=tenant_body, headers=headers)
     assert r.status_code == 201
@@ -393,14 +439,8 @@ def test_tenant_gate_then_verify_then_create():
 
 def test_tenant_documents_flow():
     _, headers = _make_owner("919666666666", "Docs Owner")
+    _approve_owner("919666666666")
     listing = _make_listing(headers, "Docs PG")
-    admin = _admin_token()
-    ah = _auth_headers(admin)
-    owners = client.get("/api/admin/owners", headers=ah).json()
-    owner_id = [o for o in owners
-                if o["whatsapp"] == "919666666666"][0]["id"]
-    client.post(f"/api/admin/owners/{owner_id}/verify",
-                json={"verified": True}, headers=ah)
     r = client.post("/api/owner/tenants", json={
         "listing_id": listing["id"], "name": "Sita",
         "whatsapp": "918888888882"}, headers=headers)
@@ -427,15 +467,9 @@ def test_tenant_documents_flow():
 
 def test_mess_config_roundtrip():
     _, headers = _make_owner("919777777777", "Mess Owner")
+    _approve_owner("919777777777")
     listing = _make_listing(headers, "Mess PG")
     lid = listing["id"]
-    admin = _admin_token()
-    ah = _auth_headers(admin)
-    owners = client.get("/api/admin/owners", headers=ah).json()
-    owner_id = [o for o in owners
-                if o["whatsapp"] == "919777777777"][0]["id"]
-    client.post(f"/api/admin/owners/{owner_id}/verify",
-                json={"verified": True}, headers=ah)
 
     # Default config before anything is set.
     r = client.get(f"/api/owner/listings/{lid}/mess", headers=headers)
@@ -474,14 +508,8 @@ def test_mess_config_roundtrip():
 
 def test_rent_record_with_method_upi():
     _, headers = _make_owner("919888888888", "Rent Owner")
+    _approve_owner("919888888888")
     listing = _make_listing(headers, "Rent PG")
-    admin = _admin_token()
-    ah = _auth_headers(admin)
-    owners = client.get("/api/admin/owners", headers=ah).json()
-    owner_id = [o for o in owners
-                if o["whatsapp"] == "919888888888"][0]["id"]
-    client.post(f"/api/admin/owners/{owner_id}/verify",
-                json={"verified": True}, headers=ah)
 
     r = client.post("/api/owner/rent", json={
         "listing_id": listing["id"], "tenant_name": "Ravi Kumar",
@@ -501,3 +529,98 @@ def test_rent_record_with_method_upi():
         "month": "2026-12", "amount": 100, "method": "card"},
         headers=headers)
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------- new: owner registration approval
+def test_owner_registration_approval_flow():
+    # Tenant signups are never approval-gated.
+    r = client.post("/api/auth/register", json={
+        "name": "Tenant", "whatsapp": "919000000001",
+        "password": "tenantpass", "role": "tenant"})
+    assert r.status_code == 201
+    assert r.json()["approval_status"] == "approved"
+
+    # New owner signup -> pending, visible in the New Requests queue.
+    _, headers = _make_owner("919000000002", "Queue Owner")
+    admin = _admin_token()
+    ah = _auth_headers(admin)
+    r = client.get("/api/admin/requests", headers=ah)
+    assert r.status_code == 200
+    mine = [o for o in r.json()["owner_requests"]
+            if o["whatsapp"] == "919000000002"]
+    assert len(mine) == 1
+    assert mine[0]["approval_status"] == "pending"
+    owner_id = mine[0]["id"]
+
+    r = client.get("/api/admin/overview", headers=ah)
+    assert r.json()["pending_owner_requests"] >= 1
+
+    # Hold with a note -> owner sees hold + note; still cannot list.
+    r = client.post(f"/api/admin/owners/{owner_id}/hold",
+                    json={"note": "Aadhaar photo unclear hai"}, headers=ah)
+    assert r.status_code == 200
+    assert r.json()["approval_status"] == "hold"
+    assert r.json()["approval_note"] == "Aadhaar photo unclear hai"
+    r = client.get("/api/owner/me", headers=headers)
+    assert r.json()["approval_status"] == "hold"
+    assert r.json()["approval_note"] == "Aadhaar photo unclear hai"
+
+    # Unhold -> back to pending.
+    r = client.post(f"/api/admin/owners/{owner_id}/unhold", json={},
+                    headers=ah)
+    assert r.status_code == 200
+    assert r.json()["approval_status"] == "pending"
+
+    # Reject with a reason -> owner sees it; still cannot list.
+    r = client.post(f"/api/admin/owners/{owner_id}/reject",
+                    json={"reason": "Fake details"}, headers=ah)
+    assert r.status_code == 200
+    assert r.json()["approval_status"] == "rejected"
+    assert r.json()["approval_note"] == "Fake details"
+    r = client.post("/api/listings", json={
+        "name": "Rejected PG", "area": "Korrah", "city": "Hazaribagh",
+        "type": "PG", "for_whom": "Boys", "rent": 3000}, headers=headers)
+    assert r.status_code == 403
+
+    # Approve -> unlocked; listing create works; queue no longer shows them.
+    r = client.post(f"/api/admin/owners/{owner_id}/approve", json={},
+                    headers=ah)
+    assert r.status_code == 200
+    assert r.json()["approval_status"] == "approved"
+    assert r.json()["verified_owner"] is True
+    r = client.get("/api/admin/requests", headers=ah)
+    assert all(o["whatsapp"] != "919000000002"
+               for o in r.json()["owner_requests"])
+    listing = _make_listing(headers, "Queue PG")
+    assert listing["status"] == "pending"
+
+
+def test_admin_added_listing_goes_live_directly():
+    admin = _admin_token()
+    ah = _auth_headers(admin)
+    r = client.post("/api/admin/listings", json={
+        "name": "Admin PG", "area": "Matwari", "city": "Hazaribagh",
+        "type": "PG", "for_whom": "Girls", "rent": 4500}, headers=ah)
+    assert r.status_code == 201
+    assert r.json()["status"] == "live"
+    assert r.json()["verified"] is True
+    lid = r.json()["id"]
+    # Visible publicly at once — no approval queue.
+    r = client.get("/api/listings", params={"search": "Admin PG"})
+    assert lid in [item["id"] for item in r.json()["items"]]
+
+    # Admin can assign the PG to an approved owner at creation time.
+    _, headers = _make_owner("919000000003", "Assigned Owner")
+    _approve_owner("919000000003")
+    owners = client.get("/api/admin/owners", headers=ah).json()
+    owner_id = [o for o in owners
+                if o["whatsapp"] == "919000000003"][0]["id"]
+    r = client.post("/api/admin/listings", json={
+        "name": "Assigned PG", "area": "Lalpur", "city": "Ranchi",
+        "type": "PG", "for_whom": "Boys", "rent": 5000,
+        "owner_id": owner_id}, headers=ah)
+    assert r.status_code == 201
+    assert r.json()["status"] == "live"
+    assert r.json()["owner_id"] == owner_id
+    r = client.get("/api/owner/listings", headers=headers)
+    assert any(item["name"] == "Assigned PG" for item in r.json())
