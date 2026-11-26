@@ -366,6 +366,7 @@ export function propertyToApiListing(p: Partial<Property>): Record<string, unkno
     city: p.city,
     type: 'PG',
     for: p.gender,
+    for_whom: p.gender,
     address: p.address,
     contact: p.ownerPhone,
     phone: p.ownerPhone,
@@ -379,6 +380,7 @@ export function propertyToApiListing(p: Partial<Property>): Record<string, unkno
     food_note: p.foodNote,
     rules: p.rules,
     maps_url: p.mapsUrl ?? p.mapsQuery,
+    maps: p.mapsUrl ?? p.mapsQuery,
     verified: p.verified ?? false,
   }
 }
@@ -510,7 +512,8 @@ export function normalizeAuthResponse(
       user: { name: fallback.name ?? fallback.phone, phone: fallback.phone, role: fallback.role },
     }
   }
-  const phone = String(u.phone ?? fallback.phone)
+  // Backend user objects carry `whatsapp`, not `phone` (UserResponse schema).
+  const phone = String(u.phone ?? (u as Record<string, unknown>).whatsapp ?? fallback.phone)
   const role = u.role === 'owner' ? 'owner' : 'tenant'
   return {
     token,
@@ -530,11 +533,22 @@ export async function register(input: {
   password: string
   role: 'tenant' | 'owner'
 }): Promise<AuthResponse> {
-  return request<AuthResponse>('/api/auth/register', { method: 'POST', body: input, token: 'none' })
+  // Backend RegisterRequest requires `whatsapp`; `phone` is kept too for
+  // backward compatibility (Pydantic ignores extra fields).
+  return request<AuthResponse>('/api/auth/register', {
+    method: 'POST',
+    body: { ...input, whatsapp: input.phone },
+    token: 'none',
+  })
 }
 
 export async function login(input: { phone: string; password: string }): Promise<AuthResponse> {
-  return request<AuthResponse>('/api/auth/login', { method: 'POST', body: input, token: 'none' })
+  // Backend LoginRequest requires `whatsapp` — sending only `phone` 422s.
+  return request<AuthResponse>('/api/auth/login', {
+    method: 'POST',
+    body: { ...input, whatsapp: input.phone },
+    token: 'none',
+  })
 }
 
 export async function adminSetup(input: { admin_id: string; password: string }): Promise<AuthResponse> {
@@ -559,7 +573,12 @@ export async function createEnquiry(input: {
   phone: string
   message: string
 }): Promise<ApiEnquiryResponse> {
-  return request<ApiEnquiryResponse>('/api/enquiries', { method: 'POST', body: input, token: 'none' })
+  // Backend EnquiryCreate requires `whatsapp` — sending only `phone` 422s.
+  return request<ApiEnquiryResponse>('/api/enquiries', {
+    method: 'POST',
+    body: { ...input, whatsapp: input.phone },
+    token: 'none',
+  })
 }
 
 export async function createReview(input: {
@@ -568,9 +587,11 @@ export async function createReview(input: {
   stars: number
   comment: string
 }): Promise<Record<string, unknown>> {
+  // Backend ReviewCreate requires `reviewer_name` and `rating` — the
+  // frontend's `name`/`stars` spellings are kept too for compatibility.
   return request<Record<string, unknown>>('/api/reviews', {
     method: 'POST',
-    body: input,
+    body: { ...input, reviewer_name: input.name, rating: input.stars },
     token: 'none',
   })
 }
