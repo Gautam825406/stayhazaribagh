@@ -153,6 +153,8 @@ class ListingResponse(BaseModel):
     source_url: Optional[str] = None
     maps: Optional[str] = None
     verified: bool
+    status: str = "live"
+    rejection_reason: Optional[str] = None
     owner_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
@@ -169,6 +171,36 @@ class ListingListResponse(BaseModel):
 
 class VerifyRequest(BaseModel):
     verified: bool = True
+
+
+class RejectRequest(BaseModel):
+    reason: str = Field(..., min_length=2)
+
+
+class OwnerAdminResponse(BaseModel):
+    id: int
+    name: str
+    whatsapp: str
+    role: str
+    verified_owner: bool
+    listings_count: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class OwnerVerifyRequest(BaseModel):
+    verified: bool
+
+
+class OwnerMeResponse(BaseModel):
+    id: int
+    name: str
+    whatsapp: str
+    role: str
+    verified_owner: bool
+
+    model_config = {"from_attributes": True}
 
 
 # ---------------------------------------------------------------- enquiries
@@ -272,6 +304,7 @@ class RentRecordCreate(BaseModel):
     month: str = Field(..., pattern=r"^\d{4}-\d{2}$")  # e.g. 2026-11
     amount: float = Field(..., ge=0)
     status: str = "pending"
+    method: Optional[str] = None  # upi | cash
     notes: Optional[str] = None
 
     @field_validator("tenant_whatsapp")
@@ -286,6 +319,13 @@ class RentRecordCreate(BaseModel):
             raise ValueError("invalid status")
         return v
 
+    @field_validator("method")
+    @classmethod
+    def _method(cls, v):
+        if v is not None and v not in ("upi", "cash"):
+            raise ValueError("method must be upi or cash")
+        return v
+
 
 class RentRecordResponse(BaseModel):
     id: int
@@ -295,6 +335,7 @@ class RentRecordResponse(BaseModel):
     month: str
     amount: float
     status: str
+    method: Optional[str] = None
     notes: Optional[str] = None
     paid_at: Optional[datetime] = None
     created_at: datetime
@@ -316,9 +357,142 @@ class RentStatusUpdate(BaseModel):
 class OwnerSummaryResponse(BaseModel):
     listings_count: int
     verified_count: int
+    pending_count: int = 0
+    live_count: int = 0
+    verified_owner: bool = False
     enquiries_count: int
     enquiries_new: int
     tenants_count: int
     complaints_open: int
     rent_pending_amount: float
     rent_paid_amount: float
+
+
+# ---------------------------------------------------------------- tenants
+class TenantCreate(BaseModel):
+    listing_id: int
+    name: str = Field(..., min_length=2, max_length=120)
+    whatsapp: str
+    room: str = Field("", max_length=40)
+    bed: str = Field("", max_length=40)
+    rent: float = Field(0, ge=0)
+    move_in_date: Optional[str] = Field(
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$")  # YYYY-MM-DD
+
+    @field_validator("whatsapp")
+    @classmethod
+    def _wa(cls, v):
+        return _clean_whatsapp(v)
+
+
+class TenantUpdate(BaseModel):
+    moved_out: Optional[bool] = None
+    moved_out_date: Optional[str] = Field(
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    room: Optional[str] = Field(None, max_length=40)
+    bed: Optional[str] = Field(None, max_length=40)
+    rent: Optional[float] = Field(None, ge=0)
+
+
+class TenantResponse(BaseModel):
+    id: int
+    listing_id: int
+    name: str
+    whatsapp: str
+    room: str
+    bed: str
+    rent: float
+    move_in_date: Optional[str] = None
+    moved_out: bool
+    moved_out_date: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------- tenant documents
+class DocumentCreate(BaseModel):
+    doc_type: str = Field(..., min_length=2, max_length=80)
+    doc_number: Optional[str] = Field(None, max_length=80)
+    agreement_date: Optional[str] = Field(
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    police_verification: str = "pending"
+
+    @field_validator("police_verification")
+    @classmethod
+    def _pv(cls, v):
+        if v not in ("pending", "done", "not_required"):
+            raise ValueError(
+                "police_verification must be pending, done or not_required")
+        return v
+
+
+class DocumentUpdate(BaseModel):
+    doc_type: Optional[str] = Field(None, min_length=2, max_length=80)
+    doc_number: Optional[str] = Field(None, max_length=80)
+    agreement_date: Optional[str] = Field(
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    police_verification: Optional[str] = None
+
+    @field_validator("police_verification")
+    @classmethod
+    def _pv(cls, v):
+        if v is not None and v not in ("pending", "done", "not_required"):
+            raise ValueError(
+                "police_verification must be pending, done or not_required")
+        return v
+
+
+class DocumentResponse(BaseModel):
+    id: int
+    tenant_id: int
+    doc_type: str
+    doc_number: Optional[str] = None
+    agreement_date: Optional[str] = None
+    police_verification: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------- mess
+class MessConfigResponse(BaseModel):
+    listing_id: int
+    enabled: bool
+    monthly_fee: float
+    menu: dict
+
+    model_config = {"from_attributes": True}
+
+
+class MessConfigUpsert(BaseModel):
+    enabled: bool = False
+    monthly_fee: float = Field(0, ge=0)
+    menu: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class MessPaymentCreate(BaseModel):
+    listing_id: int
+    tenant_id: int
+    month: str = Field(..., pattern=r"^\d{4}-\d{2}$")  # e.g. 2026-11
+    amount: float = Field(..., ge=0)
+    status: str = "pending"
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, v):
+        if v not in ("pending", "paid", "overdue"):
+            raise ValueError("invalid status")
+        return v
+
+
+class MessPaymentResponse(BaseModel):
+    id: int
+    listing_id: int
+    tenant_id: int
+    month: str
+    amount: float
+    status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

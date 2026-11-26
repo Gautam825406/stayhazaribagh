@@ -9,13 +9,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .database import Base, engine
+from .database import Base, engine, ensure_schema
 from .routers import admin as admin_router
 from .routers import auth as auth_router
 from .routers import listings as listings_router
 from .routers import owner as owner_router
 
 Base.metadata.create_all(bind=engine)
+# Add columns create_all() cannot add to an existing production DB.
+ensure_schema()
 
 app = FastAPI(
     title="StayHazaribagh API",

@@ -42,7 +42,9 @@ def list_listings(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    q = db.query(models.Listing)
+    # Public list: only live listings. Pending (awaiting admin approval)
+    # and rejected listings are never shown here.
+    q = db.query(models.Listing).filter(models.Listing.status == "live")
     if city:
         q = q.filter(models.Listing.city.ilike(f"%{city.strip()}%"))
     if area:
@@ -80,14 +82,16 @@ def create_listing(
     db: Session = Depends(get_db),
 ):
     """Owners (and Super Admin via their own flow) can list a PG.
-    New owner listings start unverified; Super Admin verifies them."""
+    New owner listings start pending (unverified, hidden publicly)
+    until a Super Admin approves them."""
     if user.role != "owner":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only owners can create listings",
         )
     listing = models.Listing(**body.model_dump(), owner_id=user.id,
-                            verified=False)
+                            verified=False, status="pending",
+                            rejection_reason=None)
     db.add(listing)
     db.commit()
     db.refresh(listing)
@@ -110,7 +114,15 @@ def update_listing(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only edit your own listings",
         )
-    for field, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    if kind == "owner":
+        # Owners may never flip their own verified flag or approval status.
+        data.pop("verified", None)
+        data.pop("status", None)
+    else:
+        # Admin may edit any field except status (approve/reject only).
+        data.pop("status", None)
+    for field, value in data.items():
         setattr(listing, field, value)
     db.add(listing)
     db.commit()

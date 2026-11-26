@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  BadgeCheck, BedDouble, BookOpen, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Crown, Heart, Home,
+  BadgeCheck, BedDouble, BookOpen, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Crown, FileText, Heart, Home,
   KeyRound, LayoutDashboard, LogOut, MapPin, Menu, MessageSquare, Navigation, Phone, Plus, Search,
   Settings, ShieldAlert, ShieldCheck, Star, UserRound, Users, UtensilsCrossed, Wallet, X,
 } from 'lucide-react'
 import {
   ALL_LOCALITIES, LOCALITIES, avgRating, enquiryCode, hashSecret, inr, loadDB,
   mapsDirectionsUrl, mapsSearchUrl, occupancy, randomSalt, saveDB, timeAgo, uid,
-  type City, type DB, type Enquiry, type Gender, type Property, type Role, type User,
+  type City, type DB, type Enquiry, type Gender, type MessPayment,
+  type PoliceVerification, type Property, type RentRecord, type Role, type TenantDocument,
+  type TenantRecord, type User,
 } from './lib/store'
 import {
   ApiError, apiConfigured, apiErrorMessage, apiListingToProperty, adminLogin,
@@ -16,6 +18,16 @@ import {
   normalizeAuthResponse, propertyToApiListing, register as apiRegister, login as apiLogin,
   setAdminToken, setStoredUser, setToken, updateListing as apiUpdateListing,
   verifyListing as apiVerifyListing,
+  approveListing as apiApproveListing, rejectListing as apiRejectListing,
+  adminListings as apiAdminListings, adminOwners as apiAdminOwners, verifyOwner as apiVerifyOwner,
+  getOwnerMe as apiGetOwnerMe, getOwnerSummary as apiGetOwnerSummary,
+  createTenant as apiCreateTenant, listTenants as apiListTenants, updateTenant as apiUpdateTenant,
+  listDocuments as apiListDocuments, createDocument as apiCreateDocument, updateDocument as apiUpdateDocument,
+  getMessConfig as apiGetMessConfig, saveMessConfig as apiSaveMessConfig,
+  listMessPayments as apiListMessPayments, createMessPayment as apiCreateMessPayment,
+  listRentRecords as apiListRentRecords, createRentRecord as apiCreateRentRecord,
+  getOwnerListings as apiGetOwnerListings,
+  type ApiTenant, type ApiTenantDocument, type ApiMessPayment, type ApiRentRecord, type AdminOwner,
 } from './lib/api'
 import { approxDistanceKm, CITY_CENTRES, type LatLng } from './lib/geo'
 import DashboardSidebar, { type SidebarSection } from './components/DashboardSidebar'
@@ -30,8 +42,8 @@ type View = 'home' | 'bookings' | 'owner' | 'admin'
 type CityFilter = 'Both' | City
 type VerifiedTab = 'All' | 'Verified' | 'Unverified'
 type ApiStatus = 'local' | 'live' | 'offline'
-type OwnerSection = 'dashboard' | 'PGs' | 'Enquiries' | 'Tenants' | 'Rent & Dues' | 'Complaints' | 'reviews' | 'profile'
-type AdminSection = 'dashboard' | 'all' | 'verified' | 'unverified' | 'owners' | 'users' | 'enquiries' | 'reviews' | 'complaints' | 'settings'
+type OwnerSection = 'dashboard' | 'PGs' | 'Enquiries' | 'Tenants' | 'Rent & Dues' | 'Documents' | 'Mess' | 'Complaints' | 'reviews' | 'profile'
+type AdminSection = 'dashboard' | 'all' | 'verified' | 'unverified' | 'pending' | 'pgdetails' | 'owners' | 'users' | 'enquiries' | 'reviews' | 'complaints' | 'settings'
 type TenantSection = 'bookings' | 'saved' | 'profile'
 
 function CountUp({ to, suffix = '' }: { to: number; suffix?: string }) {
@@ -75,6 +87,10 @@ export default function App() {
   const [apiListings, setApiListings] = useState<Property[] | null>(null)
   const [apiLoading, setApiLoading] = useState(false)
   const [apiFailed, setApiFailed] = useState(false)
+  /** Owner verification (API mode: GET /api/owner/me; null = not loaded / failed). */
+  const [apiOwnerVerified, setApiOwnerVerified] = useState<boolean | null>(null)
+  const [ownerMeNonce, setOwnerMeNonce] = useState(0)
+  const refreshOwnerVerified = () => setOwnerMeNonce((n) => n + 1)
   const [verifiedTab, setVerifiedTab] = useState<VerifiedTab>('All')
   const [userLoc, setUserLoc] = useState<LatLng | null>(null)
   const [nearestFirst, setNearestFirst] = useState(false)
@@ -182,6 +198,26 @@ export default function App() {
     return db.users.find((u) => u.id === db.session!.userId) || null
   }, [db])
 
+  /** Owner verification state: API mode calls GET /api/owner/me when the
+      owner is logged in (re-fetched via refreshOwnerVerified, e.g. after an
+      approval); on failure it falls back to the local user.verifiedOwner.
+      Local mode uses db user.verifiedOwner (default false). */
+  useEffect(() => {
+    if (!sessionUser || sessionUser.role !== 'owner' || !apiConfigured()) {
+      setApiOwnerVerified(null)
+      return
+    }
+    let cancelled = false
+    apiGetOwnerMe()
+      .then((me) => { if (!cancelled) setApiOwnerVerified(!!me.verified_owner) })
+      .catch(() => { if (!cancelled) setApiOwnerVerified(null) })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionUser?.id, ownerMeNonce])
+  const ownerVerified = sessionUser?.role === 'owner'
+    ? (apiOwnerVerified ?? sessionUser.verifiedOwner ?? false)
+    : false
+
   const showToast = (m: string) => setToast(m)
   const update = (fn: (d: DB) => DB) => setDb((prev) => fn(structuredClone(prev)))
 
@@ -194,6 +230,10 @@ export default function App() {
 
   const filtered = useMemo(() => {
     const list = displayProperties.filter((p) => {
+      // Approval workflow (local-mode safety net; the backend also excludes
+      // them): pending / rejected owner PGs never appear in public search.
+      // Seeded PGs have no status (undefined) or 'live' and keep showing.
+      if (p.status === 'pending' || p.status === 'rejected') return false
       if (verifiedTab !== 'All' && p.verified !== (verifiedTab === 'Verified')) return false
       if (city !== 'Both' && p.city !== city) return false
       if (locality !== 'All' && p.locality !== locality) return false
@@ -429,6 +469,46 @@ export default function App() {
     }
   }
 
+  /** Super Admin approve (→ live + Verified) on an API listing. */
+  async function handleApiApprove(id: string): Promise<boolean> {
+    try {
+      await apiApproveListing(id)
+      await refreshListings()
+      refreshOwnerVerified()
+      showToast('PG approve ho gaya — ab live hai aur Verified badge laga.')
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+
+  /** Super Admin reject (with reason) on an API listing. */
+  async function handleApiReject(id: string, reason: string): Promise<boolean> {
+    try {
+      await apiRejectListing(id, reason)
+      await refreshListings()
+      showToast('PG reject kar diya gaya — owner ko reason dikhega.')
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+
+  /** Owner / Admin edit of an API listing (PATCH). Returns false on failure. */
+  async function handleApiUpdate(id: string, body: Record<string, unknown>): Promise<boolean> {
+    try {
+      await apiUpdateListing(id, body)
+      await refreshListings()
+      showToast('PG update ho gaya.')
+      return true
+    } catch (err) {
+      showToast(apiErrorMessage(err))
+      return false
+    }
+  }
+
   /** Near Me: browser location se nearest-first sort (approx distance). */
   function toggleNearMe() {
     if (nearestFirst) {
@@ -502,19 +582,41 @@ export default function App() {
   ]
   const ownerSections: SidebarSection[] = [
     {
-      heading: 'Makan Malik',
+      heading: 'PG Management',
       items: [
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, onClick: () => { go('owner'); setOwnerSection('dashboard') } },
         { id: 'PGs', label: 'My PGs', icon: Building2, badge: ownerPropIds.size, onClick: () => { go('owner'); setOwnerSection('PGs') } },
         { id: 'add', label: 'Add New PG', icon: Plus, onClick: () => setListOpen(true) },
-        { id: 'Enquiries', label: 'Enquiries', icon: MessageSquare, badge: ownerNewEnquiries, onClick: () => { go('owner'); setOwnerSection('Enquiries') } },
+      ],
+    },
+    {
+      heading: 'Tenants',
+      items: [
+        { id: 'Tenants', label: 'Tenants', icon: Users, onClick: () => { go('owner'); setOwnerSection('Tenants') } },
+      ],
+    },
+    {
+      heading: 'Payments',
+      items: [
+        { id: 'Rent & Dues', label: 'Rent & Dues', icon: Wallet, onClick: () => { go('owner'); setOwnerSection('Rent & Dues') } },
+      ],
+    },
+    {
+      heading: 'Documents',
+      items: [
+        { id: 'Documents', label: 'Documents', icon: FileText, onClick: () => { go('owner'); setOwnerSection('Documents') } },
+      ],
+    },
+    {
+      heading: 'Mess',
+      items: [
+        { id: 'Mess', label: 'Mess', icon: UtensilsCrossed, onClick: () => { go('owner'); setOwnerSection('Mess') } },
       ],
     },
     {
       heading: 'Manage',
       items: [
-        { id: 'Tenants', label: 'Tenants', icon: Users, onClick: () => { go('owner'); setOwnerSection('Tenants') } },
-        { id: 'Rent & Dues', label: 'Rent & Dues', icon: Wallet, onClick: () => { go('owner'); setOwnerSection('Rent & Dues') } },
+        { id: 'Enquiries', label: 'Enquiries', icon: MessageSquare, badge: ownerNewEnquiries, onClick: () => { go('owner'); setOwnerSection('Enquiries') } },
         { id: 'Complaints', label: 'Complaints', icon: ClipboardList, badge: ownerOpenComplaints, onClick: () => { go('owner'); setOwnerSection('Complaints') } },
         { id: 'reviews', label: 'Reviews', icon: Star, onClick: () => { go('owner'); setOwnerSection('reviews') } },
       ],
@@ -526,11 +628,14 @@ export default function App() {
       ],
     },
   ]
+  const pendingCount = displayProperties.filter((p) => p.status === 'pending').length
   const adminSections: SidebarSection[] = [
     {
       heading: 'Control Room',
       items: [
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, onClick: () => { go('admin'); setAdminSection('dashboard') } },
+        { id: 'pending', label: 'Pending Approvals', icon: ShieldAlert, badge: pendingCount, onClick: () => { go('admin'); setAdminSection('pending') } },
+        { id: 'pgdetails', label: 'PG Details', icon: Building2, onClick: () => { go('admin'); setAdminSection('pgdetails') } },
         { id: 'all', label: 'All PGs', icon: Building2, badge: totalProps, onClick: () => { go('admin'); setAdminSection('all') } },
         { id: 'verified', label: 'Verified PGs', icon: ShieldCheck, badge: verifiedCount, onClick: () => { go('admin'); setAdminSection('verified') } },
         { id: 'unverified', label: 'Unverified PGs', icon: ShieldAlert, badge: adminUnverified, onClick: () => { go('admin'); setAdminSection('unverified') } },
@@ -659,12 +764,15 @@ export default function App() {
               userInitial={sessionUser ? (sessionUser.name[0]?.toUpperCase() ?? 'M') : 'M'}
               userName={sessionUser ? sessionUser.name.split(' ')[0] : 'Makan Malik'}
               userRole={sessionUser ? 'Owner' : 'Login karo'}
+              verifiedBadge={ownerVerified}
               sections={ownerSections} activeId={ownerSection} onLogout={sessionUser ? logout : undefined}
               {...sidebarProps}
             />
             <div className="dash-content">
               <OwnerView db={viewDb} sessionUser={sessionUser} update={update} showToast={showToast}
                 apiIds={apiIds} onApiBeds={handleApiBeds} onApiDelete={handleApiDelete}
+                onApiUpdate={handleApiUpdate} onRefreshListings={refreshListings}
+                ownerVerified={ownerVerified} refreshOwnerVerified={refreshOwnerVerified}
                 section={ownerSection} setSection={setOwnerSection} freshLoginUnlocked={ownerPinUnlocked}
                 onAuth={() => setAuthOpen({ mode: 'login', portal: 'owner' })} onList={() => setListOpen(true)} onLogout={logout} />
             </div>
@@ -686,6 +794,8 @@ export default function App() {
               <AdminView db={viewDb} update={update} showToast={showToast} unlocked={adminUnlocked} setUnlocked={setAdminUnlocked}
                 adminSessionUser={adminSessionUser} onAdminLogout={adminLogout}
                 apiIds={apiIds} onApiVerify={handleApiVerify} onApiDelete={handleApiDelete}
+                onApiApprove={handleApiApprove} onApiReject={handleApiReject} onApiUpdate={handleApiUpdate}
+                onRefreshListings={refreshListings}
                 section={adminSection} setSection={setAdminSection}
                 onOpenAuth={(portal) => setAuthOpen({ mode: 'login', portal })} />
             </div>
@@ -757,8 +867,9 @@ export default function App() {
               try {
                 await createListing(propertyToApiListing(p))
                 setListOpen(false)
-                showToast('PG list ho gaya — Not Verified se start hoga. Admin verify karega.')
+                showToast('PG Pending approval pe gaya — Admin verify karega, phir live hoga')
                 await refreshListings()
+                if (sessionUser?.role === 'owner') { setOwnerSection('PGs'); go('owner') }
                 return
               } catch (err) {
                 if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
@@ -768,7 +879,8 @@ export default function App() {
                 showToast('Backend se connect nahi hua — listing device par save ho gayi.')
               }
             }
-            update((d) => { d.properties.push(p); return d }); setListOpen(false); showToast('PG list ho gaya — Not Verified se start hoga. Admin verify karega.')
+            update((d) => { d.properties.push(p); return d }); setListOpen(false); showToast('PG Pending approval pe gaya — Admin verify karega, phir live hoga')
+            if (sessionUser?.role === 'owner') { setOwnerSection('PGs'); go('owner') }
           }} />
       )}
       {toast && <div className="toast" role="status">{toast}</div>}
@@ -823,7 +935,7 @@ function HomeView(props: {
     ['Hazaribagh me PG ka rent kitna hota hai?', 'Rent area, sharing aur khane par depend karta hai. Is site par har PG ka total monthly cost (rent + mess + deposit) saaf dikhaya jata hai — koi chhupa hua charge nahi.'],
     ['StayHazaribagh par brokerage lagti hai?', 'Nahi. Tenant se koi brokerage nahi li jati, aur owner ki listing FREE hai.'],
     ['Verified badge ka matlab kya hai?', 'Super Admin ne us PG aur owner ki jaanch ki hai. Nayi listing hamesha Not Verified se start hoti hai.'],
-    ['Owner apna PG kaise list kare?', 'Upar List PG FREE button se 4 steps me — PG details, rooms/beds, facilities, aur contact. Listing turant live hogi, Not Verified badge ke saath.'],
+    ['Owner apna PG kaise list kare?', 'Upar List PG FREE button se 4 steps me — PG details, rooms/beds, facilities, aur contact. Listing Pending approval pe jayegi — Admin approve karega, tabhi public search me live hogi.'],
   ]
   return (
     <>
@@ -1329,7 +1441,8 @@ function ListPGWizard(props: {
       id: uid(), ownerId: props.sessionUser?.id || 'guest', ownerPhone: ph, name: name.trim(), city,
       locality, address: address.trim(), gender, rent: r, deposit: d || 0, foodIncluded: food,
       foodNote: foodNote.trim() || undefined, totalBeds: tb, availableBeds: av, sharing,
-      facilities: facs, rules: rules.trim(), verified: false, createdAt: new Date().toISOString(),
+      facilities: facs, rules: rules.trim(), verified: false, status: 'pending',
+      createdAt: new Date().toISOString(),
     })
   }
 
@@ -1338,7 +1451,7 @@ function ListPGWizard(props: {
       <div className="sheet" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="List PG free">
         <div className="sheet-head">
           <div><h2 style={{ margin: 0 }}>Apna PG FREE List Karein</h2>
-            <p className="muted small">Listing turant live hogi — <b>Not Verified</b> badge ke saath. Admin verify karega, tabhi Verified lagega.</p></div>
+            <p className="muted small">Listing <b>Pending approval</b> pe jayegi — Admin verify karega, tabhi public search me live hogi.</p></div>
           <button className="close-btn" onClick={props.onClose} aria-label="Close"><X size={18} /></button>
         </div>
         <div className="steps">
@@ -1556,6 +1669,11 @@ function OwnerView(props: {
   db: DB; sessionUser: User | null; update: (fn: (d: DB) => DB) => void; showToast: (m: string) => void
   apiIds: Set<string>; onApiBeds: (id: string, availableBeds: number) => Promise<boolean>
   onApiDelete: (id: string) => Promise<boolean>
+  onApiUpdate: (id: string, body: Record<string, unknown>) => Promise<boolean>
+  onRefreshListings: () => Promise<void>
+  /** Owner verification (API: GET /api/owner/me; local: user.verifiedOwner). */
+  ownerVerified: boolean
+  refreshOwnerVerified: () => void
   section: OwnerSection; setSection: (s: OwnerSection) => void
   // True right after a fresh password login/signup: the owner already proved
   // who they are, so the Portal PIN is not asked again for this session.
@@ -1571,9 +1689,55 @@ function OwnerView(props: {
   const [tName, setTName] = useState('')
   const [tPhone, setTPhone] = useState('')
   const [tRoom, setTRoom] = useState('')
+  const [tBed, setTBed] = useState('')
+  const [tRent, setTRent] = useState('')
+  const [tMoveIn, setTMoveIn] = useState('')
   const [tProp, setTProp] = useState('')
+  /** API-mode tenants (null = local mode / API unavailable → use db.tenants). */
+  const [apiTenants, setApiTenants] = useState<TenantRecord[] | null>(null)
+  const [tenantsLoading, setTenantsLoading] = useState(false)
+  /** API-mode own listings incl. pending/rejected (GET /api/owner/listings) —
+      the public /api/listings feed excludes pending PGs, so without this the
+      owner's own pending PG would never show in My PGs. Null = local mode. */
+  const [apiOwnerProps, setApiOwnerProps] = useState<Property[] | null>(null)
+  /** My PGs edit form: which listing is being edited (null = none). */
+  const [editingId, setEditingId] = useState<string | null>(null)
+  /** Rent & Dues: record-payment form + payment history (API or local). */
+  const [rentTenantId, setRentTenantId] = useState('')
+  const [rentMonth, setRentMonth] = useState(() => new Date().toISOString().slice(0, 7))
+  const [rentAmount, setRentAmount] = useState('')
+  const [rentMethod, setRentMethod] = useState<'upi' | 'cash'>('upi')
+  const [apiRent, setApiRent] = useState<RentRecord[] | null>(null)
+  /** Documents section state. */
+  const [docProp, setDocProp] = useState('')
+  const [docTenantId, setDocTenantId] = useState('')
+  const [docType, setDocType] = useState('Aadhaar')
+  const [docNumber, setDocNumber] = useState('')
+  const [docAgreement, setDocAgreement] = useState('')
+  const [docPolice, setDocPolice] = useState<PoliceVerification>('pending')
+  const [apiDocs, setApiDocs] = useState<TenantDocument[] | null>(null)
+  /** Mess section state. */
+  const [messProp, setMessProp] = useState('')
+  const [messEnabled, setMessEnabled] = useState(false)
+  const [messFee, setMessFee] = useState('')
+  const [messMenu, setMessMenu] = useState<Record<string, string>>({})
+  const [messMonth, setMessMonth] = useState(() => new Date().toISOString().slice(0, 7))
+  const [messTenantId, setMessTenantId] = useState('')
+  const [apiMessPayments, setApiMessPayments] = useState<MessPayment[] | null>(null)
+  /** Owner summary (API mode) — pending/live counts from /api/owner/summary. */
+  const [apiSummary, setApiSummary] = useState<{ pending_count?: number; live_count?: number } | null>(null)
 
-  const myProps = sessionUser ? db.properties.filter((p) => p.ownerPhone === sessionUser.phone || p.ownerId === sessionUser.id) : []
+  const myProps = sessionUser
+    ? (() => {
+        const mine = db.properties.filter((p) => p.ownerPhone === sessionUser.phone || p.ownerId === sessionUser.id)
+        if (!apiOwnerProps) return mine
+        const seen = new Set(mine.map((p) => p.id))
+        // Prefer the owner-feed copy (it carries status) for shared ids.
+        const merged = mine.map((p) => apiOwnerProps.find((x) => x.id === p.id) ?? p)
+        for (const p of apiOwnerProps) if (!seen.has(p.id)) merged.push(p)
+        return merged
+      })()
+    : []
   const myIds = myProps.map((p) => p.id)
   const myEnquiries = db.enquiries.filter((e) => myIds.includes(e.propertyId))
   const myTenants = db.tenants.filter((t) => myIds.includes(t.propertyId))
@@ -1582,8 +1746,393 @@ function OwnerView(props: {
   const myAvg = myReviews.length ? (myReviews.reduce((s, r) => s + r.stars, 0) / myReviews.length).toFixed(1) : '—'
   const totalBeds = myProps.reduce((s, p) => s + p.totalBeds, 0)
   const availBeds = myProps.reduce((s, p) => s + p.availableBeds, 0)
-  const dues = myTenants.reduce((s, t) => s + (t.rentPaid ? 0 : t.dueAmount), 0)
   const occPct = totalBeds ? Math.round(((totalBeds - availBeds) / totalBeds) * 100) : 0
+
+  /** Tenants actually shown: API data when loaded, else local db.tenants. */
+  const displayTenants: TenantRecord[] = apiTenants ?? myTenants
+  /** Dues from the displayed tenants (API tenants have rentPaid=false / dueAmount=rent). */
+  const displayDues = displayTenants.reduce((s, t) => s + (t.rentPaid ? 0 : t.dueAmount), 0)
+  /** Rent payment history: API data when loaded, else local db.rentPayments. */
+  const displayRent: RentRecord[] = apiRent ?? db.rentPayments.filter((r) => myIds.includes(r.propertyId))
+  /** Mess payments: API data when loaded, else local db.messPayments. */
+  const displayMessPayments: MessPayment[] = apiMessPayments ?? db.messPayments.filter((m) => myIds.includes(m.propertyId))
+  /** Documents for the selected tenant: API data when loaded, else local. */
+  const displayDocs: TenantDocument[] = apiDocs ?? db.documents.filter((d) => d.tenantId === docTenantId)
+
+  const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+  const DOC_TYPES = ['Aadhaar', 'PAN', 'Voter ID', 'Passport', 'Driving Licence']
+
+  function apiTenantToRecord(raw: ApiTenant): TenantRecord {
+    return {
+      id: String(raw.id),
+      propertyId: String(raw.listing_id),
+      name: raw.name,
+      phone: raw.whatsapp ?? '',
+      room: raw.room ?? '—',
+      bed: raw.bed ?? raw.room ?? '—',
+      rent: Number(raw.rent) || 0,
+      rentPaid: false,
+      dueAmount: Number(raw.rent) || 0,
+      kycDone: false,
+      joinedAt: raw.created_at ?? new Date().toISOString(),
+      moveInDate: raw.move_in_date ?? undefined,
+      movedOut: raw.moved_out ?? false,
+      movedOutDate: raw.moved_out_date ?? undefined,
+    }
+  }
+
+  async function loadApiTenants() {
+    if (!apiConfigured()) return
+    setTenantsLoading(true)
+    try {
+      const list = await apiListTenants()
+      setApiTenants(list.map(apiTenantToRecord))
+    } catch (err) {
+      // 404/403 (endpoints not deployed yet, or owner not verified) — fall
+      // back to local tenants instead of breaking the portal.
+      if (err instanceof ApiError && err.status === 403) props.showToast('Owner verification pending hai — pehle PG approve hone do.')
+      setApiTenants(null)
+    } finally {
+      setTenantsLoading(false)
+    }
+  }
+
+  async function loadApiRent() {
+    if (!apiConfigured()) return
+    try {
+      const list = await apiListRentRecords()
+      setApiRent(list.map((r: ApiRentRecord): RentRecord => ({
+        id: String(r.id),
+        propertyId: String(r.listing_id),
+        tenantName: r.tenant_name,
+        month: r.month,
+        amount: Number(r.amount) || 0,
+        method: r.method === 'upi' || r.method === 'cash' ? r.method : undefined,
+        status: r.status === 'paid' ? 'paid' : 'pending',
+        createdAt: r.created_at ?? new Date().toISOString(),
+      })))
+    } catch {
+      setApiRent(null)
+    }
+  }
+
+  async function loadApiDocs(tenantId: string) {
+    if (!apiConfigured() || !tenantId) { setApiDocs(null); return }
+    try {
+      const list = await apiListDocuments(tenantId)
+      setApiDocs(list.map((d: ApiTenantDocument): TenantDocument => ({
+        id: String(d.id),
+        tenantId: String(d.tenant_id),
+        propertyId: docProp,
+        docType: d.doc_type,
+        docNumber: d.doc_number ?? undefined,
+        agreementDate: d.agreement_date ?? undefined,
+        policeVerification: d.police_verification,
+        createdAt: d.created_at ?? new Date().toISOString(),
+      })))
+    } catch {
+      setApiDocs(null)
+    }
+  }
+
+  async function loadMessFor(propertyId: string) {
+    if (!propertyId) return
+    const local = db.messConfigs[propertyId]
+    setMessEnabled(local?.enabled ?? false)
+    setMessFee(local ? String(local.monthlyFee) : '')
+    setMessMenu(Object.fromEntries(DAYS.map((d) => [d, (local?.menu[d] ?? []).join(', ')])))
+    if (!apiConfigured()) { setApiMessPayments(null); return }
+    try {
+      const cfg = await apiGetMessConfig(propertyId)
+      setMessEnabled(!!cfg.enabled)
+      setMessFee(String(cfg.monthly_fee ?? 0))
+      setMessMenu(Object.fromEntries(DAYS.map((d) => [d, (cfg.menu?.[d] ?? []).join(', ')])))
+    } catch {
+      /* no saved config yet — keep the local/default values above */
+    }
+    try {
+      const pays = await apiListMessPayments({ listing_id: propertyId })
+      setApiMessPayments(pays.map((m: ApiMessPayment): MessPayment => ({
+        id: String(m.id),
+        propertyId: String(m.listing_id),
+        tenantId: String(m.tenant_id),
+        month: m.month,
+        amount: Number(m.amount) || 0,
+        status: m.status === 'paid' ? 'paid' : 'pending',
+        createdAt: new Date().toISOString(),
+      })))
+    } catch {
+      setApiMessPayments(null)
+    }
+  }
+
+  // API mode: (re)load owner data when the relevant section opens.
+  useEffect(() => {
+    if (!sessionUser || sessionUser.role !== 'owner' || !apiConfigured()) return
+    apiGetOwnerListings()
+      .then((list) => setApiOwnerProps(list.map(apiListingToProperty)))
+      .catch(() => setApiOwnerProps(null))
+    if (tab === 'Tenants' || tab === 'Rent & Dues' || tab === 'Documents' || tab === 'Mess') void loadApiTenants()
+    if (tab === 'Rent & Dues') void loadApiRent()
+    if (tab === 'dashboard') {
+      apiGetOwnerSummary()
+        .then((s) => setApiSummary({ pending_count: s.pending_count, live_count: s.live_count }))
+        .catch(() => setApiSummary(null))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, sessionUser?.id])
+  useEffect(() => { if (docTenantId) void loadApiDocs(docTenantId) }, [docTenantId])
+  useEffect(() => { if (messProp) void loadMessFor(messProp) }, [messProp])
+
+  /** Lock panel for the verified-owner suite (Tenants / Rent / Documents / Mess). */
+  const lockedPanel = (
+    <div className="panel" style={{ background: '#fef3c7' }}>
+      <b><ShieldAlert size={16} /> Admin verification ke baad khulega</b>
+      <p style={{ margin: '8px 0 0' }}>
+        Apna pehla PG approve hote hi ya Admin ke verify karne par ye features khul jayenge.
+        Tab tak My PGs se PG add karo aur approval ka wait karo.
+      </p>
+      <button className="btn" style={{ marginTop: 12 }} onClick={() => { props.refreshOwnerVerified(); props.showToast('Verification status check kar rahe hain…') }}>
+        Status Dobara Check Karo
+      </button>
+    </div>
+  )
+
+  /** Approval-status badge for a listing (owner + admin views). */
+  function statusBadge(p: Property) {
+    if (p.status === 'pending') return <span className="badge badge-pending"><ShieldAlert size={12} /> Pending approval</span>
+    if (p.status === 'rejected') return <span className="badge badge-rejected"><X size={12} /> Rejected</span>
+    if (p.verified) return <span className="badge badge-verified"><ShieldCheck size={12} /> Verified</span>
+    return <span className="badge badge-unverified"><ShieldAlert size={12} /> Not Verified</span>
+  }
+
+  /** Save an edited own PG. A rejected PG resubmits as pending. */
+  async function saveEditedPG(p: Property, patch: Partial<Property>) {
+    const resubmitting = p.status === 'rejected'
+    if (props.apiIds.has(p.id)) {
+      // API mode: PATCH the listing — the backend handles resubmission.
+      const ok = await props.onApiUpdate(p.id, propertyToApiListing({ ...p, ...patch }))
+      if (ok) {
+        setEditingId(null)
+        if (resubmitting) props.showToast('PG dobara submit ho gaya — Pending approval pe hai.')
+      }
+      return
+    }
+    props.update((d) => {
+      const x = d.properties.find((y) => y.id === p.id)
+      if (x) {
+        Object.assign(x, patch)
+        if (resubmitting) { x.status = 'pending'; x.rejectionReason = undefined }
+      }
+      return d
+    })
+    setEditingId(null)
+    props.showToast(resubmitting ? 'PG dobara submit ho gaya — Pending approval pe hai.' : 'PG update ho gaya.')
+  }
+
+  /** Add a tenant (API mode with local fallback). */
+  async function addTenant() {
+    if (!tProp || !tName.trim()) return props.showToast('PG aur tenant ka naam daalein')
+    const p = myProps.find((x) => x.id === tProp)
+    if (!p) return props.showToast('PG chuno')
+    const ph = tPhone.replace(/\D/g, '').slice(-10)
+    const rentNum = Number(tRent) || p.rent
+    if (apiConfigured() && props.apiIds.has(p.id)) {
+      try {
+        await apiCreateTenant({
+          listing_id: p.id, name: tName.trim(), whatsapp: ph,
+          room: tRoom.trim() || '—', bed: tBed.trim() || tRoom.trim() || '—',
+          rent: rentNum, move_in_date: tMoveIn || undefined,
+        })
+        setTName(''); setTPhone(''); setTRoom(''); setTBed(''); setTRent(''); setTMoveIn('')
+        await loadApiTenants()
+        props.showToast('Tenant add ho gaya.')
+        return
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 403) return props.showToast('Owner verification pending hai — pehle PG approve hone do.')
+        if (err instanceof ApiError && err.status === 404) {
+          /* endpoint not deployed yet — fall through to local save */
+        } else {
+          return props.showToast(apiErrorMessage(err))
+        }
+      }
+    }
+    props.update((d) => {
+      d.tenants.push({
+        id: uid(), propertyId: p.id, name: tName.trim(), phone: ph,
+        room: tRoom.trim() || '—', bed: tBed.trim() || tRoom.trim() || '—',
+        rent: rentNum, rentPaid: false, dueAmount: rentNum, kycDone: false,
+        joinedAt: new Date().toISOString(), moveInDate: tMoveIn || undefined,
+      })
+      const x = d.properties.find((y) => y.id === p.id)
+      if (x && x.availableBeds > 0) x.availableBeds -= 1
+      return d
+    })
+    setTName(''); setTPhone(''); setTRoom(''); setTBed(''); setTRent(''); setTMoveIn('')
+    props.showToast('Tenant add ho gaya — bed count update ho gaya.')
+  }
+
+  /** Move a tenant out (sets moved_out + date). */
+  async function moveOutTenant(t: TenantRecord) {
+    const today = new Date().toISOString().slice(0, 10)
+    if (apiTenants !== null) {
+      try {
+        await apiUpdateTenant(t.id, { moved_out: true, moved_out_date: today })
+        await loadApiTenants()
+        props.showToast('Tenant move out ho gaya.')
+      } catch (err) {
+        props.showToast(apiErrorMessage(err))
+      }
+      return
+    }
+    props.update((d) => {
+      const x = d.tenants.find((y) => y.id === t.id)
+      if (x) { x.movedOut = true; x.movedOutDate = today }
+      return d
+    })
+    props.showToast('Tenant move out ho gaya.')
+  }
+
+  /** Record a rent payment (method UPI/Cash + month). */
+  async function recordRentPayment() {
+    const t = displayTenants.find((x) => x.id === rentTenantId)
+    if (!t) return props.showToast('Tenant chuno')
+    const amount = Number(rentAmount)
+    if (!amount || amount <= 0) return props.showToast('Sahi amount daalein')
+    if (!/^\d{4}-\d{2}$/.test(rentMonth)) return props.showToast('Mahina sahi format me chuno (YYYY-MM)')
+    if (apiConfigured() && props.apiIds.has(t.propertyId)) {
+      try {
+        await apiCreateRentRecord({
+          listing_id: t.propertyId, tenant_name: t.name, tenant_whatsapp: t.phone,
+          month: rentMonth, amount, status: 'paid', method: rentMethod,
+        })
+        setRentAmount('')
+        await loadApiRent()
+        props.showToast(`Rent record ho gaya — ${inr(amount)} (${rentMethod === 'upi' ? 'UPI' : 'Cash'}, ${rentMonth})`)
+        return
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 403) return props.showToast('Owner verification pending hai — pehle PG approve hone do.')
+        if (err instanceof ApiError && err.status !== 404) return props.showToast(apiErrorMessage(err))
+        /* 404 — endpoint not deployed yet, fall through to local save */
+      }
+    }
+    props.update((d) => {
+      d.rentPayments.push({
+        id: uid(), propertyId: t.propertyId, tenantId: t.id, tenantName: t.name,
+        month: rentMonth, amount, method: rentMethod, status: 'paid', createdAt: new Date().toISOString(),
+      })
+      const x = d.tenants.find((y) => y.id === t.id)
+      if (x) { x.rentPaid = true; x.dueAmount = 0 }
+      return d
+    })
+    setRentAmount('')
+    props.showToast(`Rent record ho gaya — ${inr(amount)} (${rentMethod === 'upi' ? 'UPI' : 'Cash'}, ${rentMonth})`)
+  }
+
+  /** Save a tenant document record. */
+  async function saveDocument() {
+    const t = displayTenants.find((x) => x.id === docTenantId)
+    if (!t) return props.showToast('Tenant chuno')
+    if (apiConfigured() && props.apiIds.has(t.propertyId)) {
+      try {
+        await apiCreateDocument(t.id, {
+          doc_type: docType, doc_number: docNumber.trim() || undefined,
+          agreement_date: docAgreement || undefined, police_verification: docPolice,
+        })
+        setDocNumber(''); setDocAgreement('')
+        await loadApiDocs(t.id)
+        props.showToast('Document save ho gaya.')
+        return
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 403) return props.showToast('Owner verification pending hai — pehle PG approve hone do.')
+        if (err instanceof ApiError && err.status !== 404) return props.showToast(apiErrorMessage(err))
+      }
+    }
+    props.update((d) => {
+      d.documents.push({
+        id: uid(), tenantId: t.id, propertyId: t.propertyId, docType,
+        docNumber: docNumber.trim() || undefined, agreementDate: docAgreement || undefined,
+        policeVerification: docPolice, createdAt: new Date().toISOString(),
+      })
+      return d
+    })
+    setDocNumber(''); setDocAgreement('')
+    props.showToast('Document save ho gaya.')
+  }
+
+  /** Cycle a document's police-verification status (pending → done → not_required). */
+  async function cyclePoliceStatus(d: TenantDocument) {
+    const next: PoliceVerification =
+      d.policeVerification === 'pending' ? 'done' : d.policeVerification === 'done' ? 'not_required' : 'pending'
+    if (apiDocs !== null) {
+      try {
+        await apiUpdateDocument(d.id, { police_verification: next })
+        await loadApiDocs(d.tenantId)
+        props.showToast('Police verification status update ho gaya.')
+      } catch (err) {
+        props.showToast(apiErrorMessage(err))
+      }
+      return
+    }
+    props.update((db2) => {
+      const x = db2.documents.find((y) => y.id === d.id)
+      if (x) x.policeVerification = next
+      return db2
+    })
+  }
+
+  /** Save the mess config for the selected PG. */
+  async function saveMess() {
+    if (!messProp) return props.showToast('PG chuno')
+    const menu: Record<string, string[]> = {}
+    for (const d of DAYS) {
+      const items = (messMenu[d] ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+      if (items.length) menu[d] = items
+    }
+    const fee = Number(messFee) || 0
+    if (apiConfigured() && props.apiIds.has(messProp)) {
+      try {
+        await apiSaveMessConfig(messProp, { enabled: messEnabled, monthly_fee: fee, menu })
+        props.showToast('Mess settings save ho gayi.')
+        return
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 403) return props.showToast('Owner verification pending hai — pehle PG approve hone do.')
+        if (err instanceof ApiError && err.status !== 404) return props.showToast(apiErrorMessage(err))
+      }
+    }
+    props.update((d) => {
+      d.messConfigs[messProp] = { enabled: messEnabled, monthlyFee: fee, menu }
+      return d
+    })
+    props.showToast('Mess settings save ho gayi.')
+  }
+
+  /** Record a mess-fee payment for a tenant. */
+  async function recordMessPayment() {
+    const t = displayTenants.find((x) => x.id === messTenantId)
+    if (!t || !messProp) return props.showToast('PG aur tenant chuno')
+    const fee = Number(messFee) || t.rent
+    if (!fee || fee <= 0) return props.showToast('Mess fee pehle set karo')
+    if (apiConfigured() && props.apiIds.has(messProp)) {
+      try {
+        await apiCreateMessPayment({ listing_id: messProp, tenant_id: t.id, month: messMonth, amount: fee, status: 'paid' })
+        await loadMessFor(messProp)
+        props.showToast(`Mess fee record ho gayi — ${inr(fee)} (${messMonth})`)
+        return
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 403) return props.showToast('Owner verification pending hai — pehle PG approve hone do.')
+        if (err instanceof ApiError && err.status !== 404) return props.showToast(apiErrorMessage(err))
+      }
+    }
+    props.update((d) => {
+      d.messPayments.push({
+        id: uid(), propertyId: messProp, tenantId: t.id, month: messMonth,
+        amount: fee, status: 'paid', createdAt: new Date().toISOString(),
+      })
+      return d
+    })
+    props.showToast(`Mess fee record ho gayi — ${inr(fee)} (${messMonth})`)
+  }
 
   if (!sessionUser) {
     return (
@@ -1647,6 +2196,16 @@ function OwnerView(props: {
     <section className="section container">
       <h2>Namaste, {sessionUser.name} ji — Makan Malik Portal</h2>
       <p className="muted">Sirf aapke PGs — {myProps.length} PG • {totalBeds} beds • {availBeds} khali</p>
+      <p style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        {props.ownerVerified
+          ? <span className="badge badge-verified"><ShieldCheck size={13} /> Verified Owner</span>
+          : <span className="badge badge-pending"><ShieldAlert size={13} /> Verification pending</span>}
+        <span className="small muted">
+          Live: {apiSummary?.live_count ?? myProps.filter((p) => p.status !== 'pending' && p.status !== 'rejected').length}
+          {' • '}Pending approval: {apiSummary?.pending_count ?? myProps.filter((p) => p.status === 'pending').length}
+          {' • '}Rejected: {myProps.filter((p) => p.status === 'rejected').length}
+        </span>
+      </p>
 
       {!sessionUser.pinHash ? (
         <div className="panel" style={{ background: '#fef3c7' }}>
@@ -1674,14 +2233,14 @@ function OwnerView(props: {
             <div className="tile"><b><CountUp to={myProps.length} /></b><span>Mere PGs</span></div>
             <div className="tile"><b>{occPct}%</b><span>Occupancy</span><div className="occ"><i style={{ width: `${occPct}%` }} /></div></div>
             <div className="tile"><b>{availBeds}</b><span>Khali beds</span></div>
-            <div className="tile"><b>{inr(dues)}</b><span>Pending dues</span></div>
+            <div className="tile"><b>{inr(displayDues)}</b><span>Pending dues</span></div>
           </div>
           <div className="panel">
             <h3 style={{ marginTop: 0 }}>Aaj kya karein?</h3>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button className="btn btn-orange" onClick={props.onList}><Plus size={18} /> Naya PG List Karo — FREE</button>
               <button className="btn btn-ghost" onClick={() => props.setSection('Enquiries')}><MessageSquare size={16} /> Enquiries ({myEnquiries.filter((e) => e.status === 'New').length} new)</button>
-              <button className="btn btn-ghost" onClick={() => props.setSection('Rent & Dues')}><Wallet size={16} /> Rent &amp; Dues — {inr(dues)} pending</button>
+              <button className="btn btn-ghost" onClick={() => props.setSection('Rent & Dues')}><Wallet size={16} /> Rent &amp; Dues — {inr(displayDues)} pending</button>
               <button className="btn btn-ghost" onClick={() => props.setSection('Complaints')}><ClipboardList size={16} /> Complaints ({myComplaints.filter((c) => c.status === 'Open').length} open)</button>
             </div>
           </div>
@@ -1707,20 +2266,32 @@ function OwnerView(props: {
       {tab === 'PGs' && (
         <>
           <button className="btn btn-orange" style={{ marginTop: 14 }} onClick={props.onList}><Plus size={18} /> Naya PG List Karo — FREE</button>
+          <p className="small muted" style={{ marginTop: 8 }}>Naya PG <b>Pending approval</b> pe jata hai — Admin approve karega, tabhi public search me live hoga.</p>
           {myProps.length === 0 && <div className="empty" style={{ marginTop: 14 }}><p>Abhi aapka koi PG listed nahi hai. Upar se pehla PG list karein.</p></div>}
           {myProps.map((p) => (
             <div className="panel" key={p.id}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.name}</b> — {p.locality}, {p.city} {p.verified ? <span className="badge badge-verified"><ShieldCheck size={12} /> Verified</span> : <span className="badge badge-unverified"><ShieldAlert size={12} /> Not Verified</span>}<br />
+                <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.name}</b> — {p.locality}, {p.city} {statusBadge(p)}<br />
                   <span className="muted small">{inr(p.rent)}/month • {p.gender} • {p.availableBeds}/{p.totalBeds} beds free</span></div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <button className="btn btn-ghost stepper" aria-label="Bed kam karo" onClick={() => void adjustBeds(p, -1)}>−</button>
                   <b>{p.availableBeds}</b>
                   <button className="btn btn-ghost stepper" aria-label="Bed badhao" onClick={() => void adjustBeds(p, 1)}>+</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setEditingId(editingId === p.id ? null : p.id)}>{editingId === p.id ? 'Band Karo' : 'Edit Karo'}</button>
                   <button className="btn btn-danger btn-sm" onClick={() => void deleteMyListing(p)}>Delete</button>
                 </div>
               </div>
               <div className="occ"><i style={{ width: `${occupancy(p)}%` }} /></div>
+              {p.status === 'rejected' && (
+                <div className="panel" style={{ background: '#fde8e8', marginTop: 12 }}>
+                  <b style={{ color: '#b3261e' }}>Rejected — {p.rejectionReason || 'Admin ne reason nahi diya'}</b>
+                  <p className="small" style={{ margin: '6px 0 0' }}>Details theek karke dobara submit karo — PG phir Pending approval pe jayega.</p>
+                  <button className="btn btn-sm" style={{ marginTop: 10 }} onClick={() => setEditingId(p.id)}>Edit karke dobara submit karo</button>
+                </div>
+              )}
+              {editingId === p.id && (
+                <OwnerEditPGForm p={p} onCancel={() => setEditingId(null)} onSave={(patch) => saveEditedPG(p, patch)} showToast={props.showToast} />
+              )}
             </div>
           ))}
         </>
@@ -1746,56 +2317,254 @@ function OwnerView(props: {
       )}
 
       {tab === 'Tenants' && (
-        <div className="panel">
-          <h3 style={{ marginTop: 0 }}>Tenant add karo</h3>
-          <div className="form-grid-2">
-            <select value={tProp} onChange={(e) => setTProp(e.target.value)}>
-              <option value="">— PG chuno —</option>
-              {myProps.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-            <input value={tName} onChange={(e) => setTName(e.target.value)} placeholder="Tenant ka naam" />
-            <input value={tPhone} onChange={(e) => setTPhone(e.target.value)} placeholder="Tenant phone" inputMode="tel" />
-            <input value={tRoom} onChange={(e) => setTRoom(e.target.value)} placeholder="Room / Bed — jaise Room 3, Bed B" />
-          </div>
-          <button className="btn" style={{ marginTop: 12 }} onClick={() => {
-            if (!tProp || !tName.trim()) return props.showToast('PG aur tenant ka naam daalein')
-            const p = myProps.find((x) => x.id === tProp)!
-            props.update((d) => {
-              d.tenants.push({ id: uid(), propertyId: p.id, name: tName.trim(), phone: tPhone.replace(/\D/g, '').slice(-10), room: tRoom || '—', bed: tRoom || '—', rent: p.rent, rentPaid: false, dueAmount: p.rent, kycDone: false, joinedAt: new Date().toISOString() })
-              const x = d.properties.find((y) => y.id === p.id); if (x && x.availableBeds > 0) x.availableBeds -= 1
-              return d
-            })
-            setTName(''); setTPhone(''); setTRoom('')
-            props.showToast('Tenant add ho gaya — bed count update ho gaya.')
-          }}>Tenant Add Karo</button>
-          <div className="table-wrap" style={{ marginTop: 14 }}>
-          <table className="table">
-            <thead><tr><th>Tenant</th><th>Room</th><th>Rent</th><th>KYC</th></tr></thead>
-            <tbody>{myTenants.map((t) => (
-              <tr key={t.id}><td>{t.name}<br /><span className="muted small">{t.phone}</span></td><td>{t.room}</td><td>{inr(t.rent)}</td>
-                <td><button className="chip" onClick={() => props.update((d) => { const x = d.tenants.find((y) => y.id === t.id); if (x) x.kycDone = !x.kycDone; return d })}>{t.kycDone ? '✓ Done' : 'Pending'}</button></td></tr>
-            ))}</tbody>
-          </table>
-          </div>
-          {myTenants.length === 0 && <p className="muted">Abhi koi tenant add nahi hai.</p>}
-        </div>
+        <>
+          {!props.ownerVerified && lockedPanel}
+          {props.ownerVerified && (
+            <div className="panel">
+              <h3 style={{ marginTop: 0 }}>Tenant add karo</h3>
+              <div className="form-grid-2">
+                <select value={tProp} onChange={(e) => setTProp(e.target.value)}>
+                  <option value="">— PG chuno —</option>
+                  {myProps.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <input value={tName} onChange={(e) => setTName(e.target.value)} placeholder="Tenant ka naam" />
+                <input value={tPhone} onChange={(e) => setTPhone(e.target.value)} placeholder="Tenant phone" inputMode="tel" />
+                <input value={tRoom} onChange={(e) => setTRoom(e.target.value)} placeholder="Room — jaise Room 3" />
+                <input value={tBed} onChange={(e) => setTBed(e.target.value)} placeholder="Bed — jaise Bed B" />
+                <input value={tRent} onChange={(e) => setTRent(e.target.value)} placeholder="Monthly rent (₹) — khaali ho to PG rent" inputMode="numeric" />
+                <div>
+                  <label style={{ margin: '0 0 4px' }}>Move-in date</label>
+                  <input type="date" value={tMoveIn} onChange={(e) => setTMoveIn(e.target.value)} />
+                </div>
+              </div>
+              <button className="btn" style={{ marginTop: 12 }} onClick={() => void addTenant()}>Tenant Add Karo</button>
+              {tenantsLoading && <p className="small muted" style={{ marginTop: 10 }}>Tenants load ho rahe hain…</p>}
+              {myProps.map((p) => {
+                const list = displayTenants.filter((t) => t.propertyId === p.id)
+                if (list.length === 0) return null
+                return (
+                  <div key={p.id} style={{ marginTop: 18 }}>
+                    <h4 style={{ marginBottom: 8 }}>{p.name} — {p.locality} ({list.filter((t) => !t.movedOut).length} rehte hain)</h4>
+                    <div className="table-wrap">
+                      <table className="table">
+                        <thead><tr><th>Tenant</th><th>Room / Bed</th><th>Rent</th><th>Move-in</th><th>Status</th><th></th></tr></thead>
+                        <tbody>{list.map((t) => (
+                          <tr key={t.id}>
+                            <td>{t.name}<br /><span className="muted small">{t.phone}</span></td>
+                            <td>{t.room} / {t.bed}</td>
+                            <td>{inr(t.rent)}</td>
+                            <td>{t.moveInDate || '—'}</td>
+                            <td>
+                              {t.movedOut
+                                ? <span className="badge badge-unverified">Moved out{t.movedOutDate ? ` • ${t.movedOutDate}` : ''}</span>
+                                : <span className="badge badge-verified">Reh raha hai</span>}
+                              {apiTenants === null && (
+                                <button className="chip" style={{ marginLeft: 6 }} onClick={() => props.update((d) => { const x = d.tenants.find((y) => y.id === t.id); if (x) x.kycDone = !x.kycDone; return d })}>
+                                  KYC: {t.kycDone ? '✓ Done' : 'Pending'}
+                                </button>
+                              )}
+                            </td>
+                            <td>
+                              {!t.movedOut && (
+                                <button className="btn btn-ghost btn-sm" onClick={() => void moveOutTenant(t)}>Move Out</button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  </div>
+                )
+              })}
+              {displayTenants.length === 0 && <p className="muted" style={{ marginTop: 14 }}>Abhi koi tenant add nahi hai.</p>}
+            </div>
+          )}
+        </>
       )}
 
       {tab === 'Rent & Dues' && (
-        <div className="panel">
-          <h3 style={{ marginTop: 0 }}><Wallet size={18} /> Rent &amp; Dues — {inr(dues)} pending</h3>
-          <p className="muted small">UPI ya cash — payment milte hi Paid mark karo, aur tenant ko WhatsApp par receipt bhej do.</p>
-          {myTenants.length === 0 && <p className="muted">Pehle Tenants tab se tenant add karo.</p>}
-          {myTenants.map((t) => (
-            <div className="review" key={t.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-              <div><b>{t.name}</b> — {inr(t.rent)}/month<br /><span className="muted small">{t.rentPaid ? 'Is mahine ka rent mil gaya ✓' : `Due: ${inr(t.dueAmount)}`}</span></div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-sm" onClick={() => props.update((d) => { const x = d.tenants.find((y) => y.id === t.id); if (x) { x.rentPaid = true; x.dueAmount = 0 } return d })}>Paid Mark Karo</button>
-                <a className="btn btn-ghost btn-sm" href={`https://wa.me/91${t.phone}?text=${encodeURIComponent(`Namaste ${t.name}, is mahine ka rent ${inr(t.rent)} due hai. UPI ya cash se bhej dein. — StayHazaribagh`)}`} target="_blank" rel="noreferrer">Reminder Bhejo</a>
+        <>
+          {!props.ownerVerified && lockedPanel}
+          {props.ownerVerified && (
+            <div className="panel">
+              <h3 style={{ marginTop: 0 }}><Wallet size={18} /> Rent &amp; Dues — {inr(displayDues)} pending</h3>
+              <p className="muted small">UPI ya cash — payment milte hi Paid mark karo, aur tenant ko WhatsApp par receipt bhej do.</p>
+              <h4>Payment record karo</h4>
+              <div className="form-grid-2">
+                <select value={rentTenantId} onChange={(e) => {
+                  setRentTenantId(e.target.value)
+                  const t = displayTenants.find((x) => x.id === e.target.value)
+                  if (t) setRentAmount(String(t.rent))
+                }}>
+                  <option value="">— Tenant chuno —</option>
+                  {displayTenants.filter((t) => !t.movedOut).map((t) => (
+                    <option key={t.id} value={t.id}>{t.name} — {myProps.find((p) => p.id === t.propertyId)?.name ?? ''}</option>
+                  ))}
+                </select>
+                <div>
+                  <label style={{ margin: '0 0 4px' }}>Mahina</label>
+                  <input type="month" value={rentMonth} onChange={(e) => setRentMonth(e.target.value)} />
+                </div>
+                <input value={rentAmount} onChange={(e) => setRentAmount(e.target.value)} placeholder="Amount (₹)" inputMode="numeric" />
+                <select value={rentMethod} onChange={(e) => setRentMethod(e.target.value as 'upi' | 'cash')}>
+                  <option value="upi">UPI</option>
+                  <option value="cash">Cash</option>
+                </select>
               </div>
+              <button className="btn" style={{ marginTop: 12 }} onClick={() => void recordRentPayment()}>Payment Record Karo</button>
+              <h4 style={{ marginTop: 20 }}>Payment history</h4>
+              {displayRent.length === 0 && <p className="muted">Abhi koi payment record nahi hai.</p>}
+              {[...displayRent].sort((a, b) => b.month.localeCompare(a.month)).slice(0, 20).map((r) => (
+                <div className="review" key={r.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                  <div><b>{r.tenantName}</b> — {r.month}<br /><span className="muted small">{myProps.find((p) => p.id === r.propertyId)?.name ?? ''}</span></div>
+                  <span><b>{inr(r.amount)}</b> • {r.method === 'cash' ? 'Cash' : r.method === 'upi' ? 'UPI' : '—'} • <span className={`badge ${r.status === 'paid' ? 'badge-verified' : 'badge-pending'}`}>{r.status === 'paid' ? 'Paid' : 'Pending'}</span></span>
+                </div>
+              ))}
+              <h4 style={{ marginTop: 20 }}>Dues — tenant-wise</h4>
+              {displayTenants.length === 0 && <p className="muted">Pehle Tenants tab se tenant add karo.</p>}
+              {displayTenants.filter((t) => !t.movedOut).map((t) => (
+                <div className="review" key={t.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div><b>{t.name}</b> — {inr(t.rent)}/month<br /><span className="muted small">{t.rentPaid ? 'Is mahine ka rent mil gaya ✓' : `Due: ${inr(t.dueAmount)}`}</span></div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-sm" onClick={() => props.update((d) => { const x = d.tenants.find((y) => y.id === t.id); if (x) { x.rentPaid = true; x.dueAmount = 0 } return d })}>Paid Mark Karo</button>
+                    <a className="btn btn-ghost btn-sm" href={`https://wa.me/91${t.phone}?text=${encodeURIComponent(`Namaste ${t.name}, is mahine ka rent ${inr(t.rent)} due hai. UPI ya cash se bhej dein. — StayHazaribagh`)}`} target="_blank" rel="noreferrer">Reminder Bhejo</a>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+        </>
+      )}
+
+      {tab === 'Documents' && (
+        <>
+          {!props.ownerVerified && lockedPanel}
+          {props.ownerVerified && (
+            <div className="panel">
+              <h3 style={{ marginTop: 0 }}><FileText size={18} /> Tenant Documents</h3>
+              <p className="muted small">Har tenant ka ID proof, agreement aur police verification yahan save karo.</p>
+              <div className="form-grid-2">
+                <select value={docProp} onChange={(e) => { setDocProp(e.target.value); setDocTenantId(''); setApiDocs(null) }}>
+                  <option value="">— PG chuno —</option>
+                  {myProps.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <select value={docTenantId} onChange={(e) => setDocTenantId(e.target.value)} disabled={!docProp}>
+                  <option value="">— Tenant chuno —</option>
+                  {displayTenants.filter((t) => t.propertyId === docProp && !t.movedOut).map((t) => (
+                    <option key={t.id} value={t.id}>{t.name} — {t.room}</option>
+                  ))}
+                </select>
+                <select value={docType} onChange={(e) => setDocType(e.target.value)}>
+                  {DOC_TYPES.map((d) => <option key={d}>{d}</option>)}
+                </select>
+                <input value={docNumber} onChange={(e) => setDocNumber(e.target.value)} placeholder="Document number (optional)" />
+                <div>
+                  <label style={{ margin: '0 0 4px' }}>Agreement date</label>
+                  <input type="date" value={docAgreement} onChange={(e) => setDocAgreement(e.target.value)} />
+                </div>
+                <select value={docPolice} onChange={(e) => setDocPolice(e.target.value as PoliceVerification)}>
+                  <option value="pending">Police verification: Pending</option>
+                  <option value="done">Police verification: Done</option>
+                  <option value="not_required">Police verification: Not required</option>
+                </select>
+              </div>
+              <button className="btn" style={{ marginTop: 12 }} onClick={() => void saveDocument()}>Document Save Karo</button>
+              <h4 style={{ marginTop: 20 }}>Saved documents</h4>
+              {docTenantId === '' && <p className="muted">PG aur tenant chuno — uske documents yahan dikhenge.</p>}
+              {docTenantId !== '' && displayDocs.length === 0 && <p className="muted">Is tenant ka koi document abhi save nahi hai.</p>}
+              {displayDocs.map((d) => (
+                <div className="review" key={d.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div>
+                    <b>{d.docType}</b>{d.docNumber ? ` — ${d.docNumber}` : ''}<br />
+                    <span className="muted small">Agreement: {d.agreementDate || '—'} • {timeAgo(d.createdAt)}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span className={`badge ${d.policeVerification === 'done' ? 'badge-verified' : d.policeVerification === 'pending' ? 'badge-pending' : 'badge-unverified'}`}>
+                      Police: {d.policeVerification === 'done' ? 'Done' : d.policeVerification === 'pending' ? 'Pending' : 'Not required'}
+                    </span>
+                    <button className="btn btn-ghost btn-sm" onClick={() => void cyclePoliceStatus(d)}>
+                      Police status badlo
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {tab === 'Mess' && (
+        <>
+          {!props.ownerVerified && lockedPanel}
+          {props.ownerVerified && (
+            <div className="panel">
+              <h3 style={{ marginTop: 0 }}><UtensilsCrossed size={18} /> Mess Management</h3>
+              <p className="muted small">Har PG ke liye mess on/off, monthly fee aur hafte ka menu set karo — aur mess fee collection track karo.</p>
+              <label>PG chuno</label>
+              <select value={messProp} onChange={(e) => { setMessProp(e.target.value); setMessTenantId('') }}>
+                <option value="">— PG chuno —</option>
+                {myProps.map((p) => <option key={p.id} value={p.id}>{p.name} — {p.locality}</option>)}
+              </select>
+              {messProp && (
+                <>
+                  <h4 style={{ marginTop: 18 }}>Mess settings — {myProps.find((p) => p.id === messProp)?.name}</h4>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <button type="button" className={`chip ${messEnabled ? 'active' : ''}`} onClick={() => setMessEnabled(true)}>Mess On</button>
+                    <button type="button" className={`chip ${!messEnabled ? 'active' : ''}`} onClick={() => setMessEnabled(false)}>Mess Off</button>
+                    <input value={messFee} onChange={(e) => setMessFee(e.target.value)} placeholder="Monthly mess fee (₹)" inputMode="numeric" style={{ maxWidth: 220 }} />
+                  </div>
+                  <h4 style={{ marginTop: 16 }}>Weekly menu — har din comma se alag items likho</h4>
+                  {DAYS.map((d) => (
+                    <div key={d}>
+                      <label>{d}</label>
+                      <input
+                        value={messMenu[d] ?? ''}
+                        onChange={(e) => setMessMenu((prev) => ({ ...prev, [d]: e.target.value }))}
+                        placeholder={`Jaise — Dal, Chawal, Sabzi, Roti`}
+                      />
+                    </div>
+                  ))}
+                  <button className="btn" style={{ marginTop: 12 }} onClick={() => void saveMess()}>Mess Settings Save Karo</button>
+
+                  <h4 style={{ marginTop: 24 }}>Mess fee collection — {messMonth}</h4>
+                  <div className="form-grid-2">
+                    <div>
+                      <label style={{ margin: '0 0 4px' }}>Mahina</label>
+                      <input type="month" value={messMonth} onChange={(e) => setMessMonth(e.target.value)} />
+                    </div>
+                    <select value={messTenantId} onChange={(e) => setMessTenantId(e.target.value)}>
+                      <option value="">— Tenant chuno —</option>
+                      {displayTenants.filter((t) => t.propertyId === messProp && !t.movedOut).map((t) => (
+                        <option key={t.id} value={t.id}>{t.name} — {t.room}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <button className="btn" style={{ marginTop: 12 }} onClick={() => void recordMessPayment()}>Mess Fee Paid Record Karo</button>
+                  <div className="table-wrap" style={{ marginTop: 14 }}>
+                    <table className="table">
+                      <thead><tr><th>Tenant</th><th>{messMonth} status</th><th>Amount</th></tr></thead>
+                      <tbody>
+                        {displayTenants.filter((t) => t.propertyId === messProp && !t.movedOut).map((t) => {
+                          const paid = displayMessPayments.find((m) => m.tenantId === t.id && m.month === messMonth && m.status === 'paid')
+                          return (
+                            <tr key={t.id}>
+                              <td>{t.name}<br /><span className="muted small">{t.room}</span></td>
+                              <td>{paid ? <span className="badge badge-verified">Paid</span> : <span className="badge badge-pending">Pending</span>}</td>
+                              <td>{paid ? inr(paid.amount) : inr(Number(messFee) || 0)}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {displayTenants.filter((t) => t.propertyId === messProp && !t.movedOut).length === 0 && (
+                    <p className="muted">Is PG me abhi koi tenant nahi hai.</p>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       {tab === 'Complaints' && (
@@ -1860,6 +2629,112 @@ function OwnerView(props: {
   )
 }
 
+/* ---------------- Owner: edit own PG (resubmits a rejected PG as pending) ---------------- */
+function OwnerEditPGForm(props: {
+  p: Property
+  onCancel: () => void
+  onSave: (patch: Partial<Property>) => Promise<void> | void
+  showToast: (m: string) => void
+}) {
+  const { p } = props
+  const [name, setName] = useState(p.name)
+  const [locality, setLocality] = useState(p.locality)
+  const [city, setCity] = useState<City>(p.city)
+  const [gender, setGender] = useState<Gender>(p.gender)
+  const [rent, setRent] = useState(String(p.rent))
+  const [totalBeds, setTotalBeds] = useState(String(p.totalBeds))
+  const [availBeds, setAvailBeds] = useState(String(p.availableBeds))
+  const [facs, setFacs] = useState<string[]>(p.facilities)
+  const [contact, setContact] = useState(p.ownerPhone)
+  const [address, setAddress] = useState(p.address)
+  const [busy, setBusy] = useState(false)
+
+  async function save() {
+    const ph = contact.replace(/\D/g, '').slice(-10)
+    const r = Number(rent), tb = Number(totalBeds), av = Number(availBeds)
+    if (!name.trim() || !address.trim()) return props.showToast('PG ka naam aur address daalein')
+    if (ph.length !== 10) return props.showToast('Sahi 10-digit WhatsApp number daalein')
+    if (!r || !tb || av < 0 || av > tb) return props.showToast('Rent, total beds aur available beds sahi daalein')
+    setBusy(true)
+    await props.onSave({
+      name: name.trim(), locality, city, gender, rent: r,
+      totalBeds: tb, availableBeds: av, facilities: facs,
+      ownerPhone: ph, address: address.trim(),
+    })
+    setBusy(false)
+  }
+
+  return (
+    <div className="panel" style={{ background: '#f8fafc', marginTop: 12 }}>
+      <h4 style={{ marginTop: 0 }}>PG edit karo{p.status === 'rejected' ? ' — save karte hi dobara Pending approval pe jayega' : ''}</h4>
+      <div className="form-grid-2">
+        <div>
+          <label>PG ka naam</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div>
+          <label>Locality</label>
+          <select value={locality} onChange={(e) => setLocality(e.target.value)}>
+            {LOCALITIES[city].map((l) => <option key={l} value={l}>{l}</option>)}
+            {!LOCALITIES[city].includes(locality) && <option value={locality}>{locality}</option>}
+          </select>
+        </div>
+        <div>
+          <label>City</label>
+          <div className="segmented">
+            {(['Hazaribagh', 'Ranchi'] as City[]).map((c) => (
+              <button key={c} type="button" className={city === c ? 'active' : ''} onClick={() => setCity(c)}>{c}</button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label>Kaun ke liye</label>
+          <div className="segmented">
+            {(['Boys', 'Girls', 'Co-ed'] as Gender[]).map((g) => (
+              <button key={g} type="button" className={gender === g ? 'active' : ''} onClick={() => setGender(g)}>{g}</button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label>Monthly rent per bed (₹)</label>
+          <input value={rent} onChange={(e) => setRent(e.target.value)} inputMode="numeric" />
+        </div>
+        <div>
+          <label>Total beds</label>
+          <input value={totalBeds} onChange={(e) => setTotalBeds(e.target.value)} inputMode="numeric" />
+        </div>
+        <div>
+          <label>Available beds</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button type="button" className="btn btn-ghost stepper" onClick={() => setAvailBeds(String(Math.max(0, Number(availBeds) - 1)))}>−</button>
+            <b>{availBeds}</b>
+            <button type="button" className="btn btn-ghost stepper" onClick={() => setAvailBeds(String(Math.min(Number(totalBeds) || 0, Number(availBeds) + 1)))}>+</button>
+          </div>
+        </div>
+        <div>
+          <label>Contact (WhatsApp)</label>
+          <input value={contact} onChange={(e) => setContact(e.target.value)} inputMode="tel" />
+        </div>
+      </div>
+      <label>Poora address</label>
+      <input value={address} onChange={(e) => setAddress(e.target.value)} />
+      <label>Facilities</label>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {FACILITIES.map((f) => (
+          <button key={f} type="button" className={`chip ${facs.includes(f) ? 'active' : ''}`}
+            onClick={() => setFacs(facs.includes(f) ? facs.filter((x) => x !== f) : [...facs, f])}>{f}</button>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+        <button className="btn btn-orange" disabled={busy} onClick={() => void save()}>
+          {busy ? 'Save ho raha hai…' : p.status === 'rejected' ? 'Save + Dobara Submit Karo' : 'Save Karo'}
+        </button>
+        <button className="btn btn-ghost" onClick={props.onCancel}>Cancel</button>
+      </div>
+    </div>
+  )
+}
+
 /* ---------------- Super Admin ---------------- */
 function AdminView(props: {
   db: DB; update: (fn: (d: DB) => DB) => void; showToast: (m: string) => void
@@ -1868,6 +2743,10 @@ function AdminView(props: {
   onAdminLogout: () => void
   apiIds: Set<string>; onApiVerify: (id: string, verified: boolean) => Promise<boolean>
   onApiDelete: (id: string) => Promise<boolean>
+  onApiApprove: (id: string) => Promise<boolean>
+  onApiReject: (id: string, reason: string) => Promise<boolean>
+  onApiUpdate: (id: string, body: Record<string, unknown>) => Promise<boolean>
+  onRefreshListings: () => Promise<void>
   section: AdminSection; setSection: (s: AdminSection) => void
   onOpenAuth: (portal: 'user' | 'owner' | 'admin') => void
 }) {
@@ -1879,25 +2758,159 @@ function AdminView(props: {
   const [adminId, setAdminId] = useState('')
   const [adminPass, setAdminPass] = useState('')
   const [adminPass2, setAdminPass2] = useState('')
+  /** Admin API data (null = local mode / not loaded yet → use db.properties). */
+  const [adminListings, setAdminListings] = useState<Property[] | null>(null)
+  const [adminOwnersList, setAdminOwnersList] = useState<AdminOwner[] | null>(null)
+  /** PG Details view: search + filters + selected PG. */
+  const [pgSearch, setPgSearch] = useState('')
+  const [pgStatus, setPgStatus] = useState<'All' | 'pending' | 'live' | 'rejected'>('All')
+  const [pgCity, setPgCity] = useState<'All' | City>('All')
+  const [pgOwner, setPgOwner] = useState('All')
+  const [selectedAdminPg, setSelectedAdminPg] = useState<Property | null>(null)
+  const [editingAdminId, setEditingAdminId] = useState<string | null>(null)
 
   const hzb = db.properties.filter((p) => p.city === 'Hazaribagh')
   const rnc = db.properties.filter((p) => p.city === 'Ranchi')
   const owners = db.users.filter((u) => u.role === 'owner')
   const tenants = db.users.filter((u) => u.role === 'tenant')
   const isAdminIn = !!props.adminSessionUser || props.unlocked
-  const verifiedList = db.properties.filter((p) => p.verified)
-  const unverifiedList = db.properties.filter((p) => !p.verified)
+  /** All listings the admin can manage: server list (incl. pending/rejected)
+      in API mode, else the displayed/local properties. */
+  const adminProps: Property[] = adminListings ?? db.properties
+  const verifiedList = adminProps.filter((p) => p.verified)
+  const unverifiedList = adminProps.filter((p) => !p.verified)
+  const pendingList = adminProps.filter((p) => p.status === 'pending')
+  /** Owners directory: server list in API mode, else local owner accounts. */
+  const adminOwnersView: { id: string; name: string; phone: string; verifiedOwner: boolean; pgCount: number }[] =
+    adminOwnersList !== null
+      ? adminOwnersList.map((o) => ({
+          id: String(o.id), name: o.name, phone: o.whatsapp,
+          verifiedOwner: o.verified_owner,
+          pgCount: o.listings_count ?? adminProps.filter((p) => p.ownerId === String(o.id) || p.ownerPhone === o.whatsapp).length,
+        }))
+      : owners.map((o) => ({
+          id: o.id, name: o.name, phone: o.phone, verifiedOwner: o.verifiedOwner ?? false,
+          pgCount: adminProps.filter((p) => p.ownerPhone === o.phone || p.ownerId === o.id).length,
+        }))
 
-  /** One listing row with Verify / Delete — reused by All / Verified / Unverified sections. */
+  async function loadAdminListings() {
+    if (!apiConfigured()) { setAdminListings(null); return }
+    try {
+      const list = await apiAdminListings()
+      setAdminListings(list.map(apiListingToProperty))
+    } catch {
+      // Admin endpoint not deployed yet — fall back to local/displayed data.
+      setAdminListings(null)
+    }
+  }
+
+  async function loadAdminOwners() {
+    if (!apiConfigured()) { setAdminOwnersList(null); return }
+    try {
+      setAdminOwnersList(await apiAdminOwners())
+    } catch {
+      setAdminOwnersList(null)
+    }
+  }
+
+  // API mode: load the admin lists when an admin section that needs them opens.
+  useEffect(() => {
+    if (!isAdminIn || !apiConfigured()) return
+    if (['pending', 'pgdetails', 'all', 'verified', 'unverified', 'dashboard'].includes(props.section)) void loadAdminListings()
+    if (props.section === 'owners') void loadAdminOwners()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.section, isAdminIn])
+
+  /** Approve a listing (API or local). First approval auto-verifies the owner. */
+  async function approvePG(p: Property) {
+    if (apiConfigured() && (adminListings !== null || props.apiIds.has(p.id))) {
+      if (await props.onApiApprove(p.id)) {
+        await loadAdminListings()
+        setSelectedAdminPg((cur) => (cur?.id === p.id ? { ...cur, status: 'live', verified: true } : cur))
+      }
+      return
+    }
+    props.update((d) => {
+      const x = d.properties.find((y) => y.id === p.id)
+      if (x) { x.status = 'live'; x.verified = true; x.rejectionReason = undefined }
+      const owner = d.users.find((u) => u.phone === p.ownerPhone || u.id === p.ownerId)
+      if (owner) owner.verifiedOwner = true
+      return d
+    })
+    setSelectedAdminPg((cur) => (cur?.id === p.id ? { ...cur, status: 'live', verified: true } : cur))
+    props.showToast('PG approve ho gaya — ab live hai aur Verified badge laga. Owner bhi verify ho gaya.')
+  }
+
+  /** Reject a listing with a reason (API or local). */
+  async function rejectPG(p: Property) {
+    const reason = window.prompt(`"${p.name}" reject karne ka reason likho (owner ko dikhega):`, '')
+    if (reason === null) return
+    const finalReason = reason.trim() || 'Admin ne reject kiya — details check karke dobara submit karo.'
+    if (apiConfigured() && (adminListings !== null || props.apiIds.has(p.id))) {
+      if (await props.onApiReject(p.id, finalReason)) {
+        await loadAdminListings()
+        setSelectedAdminPg((cur) => (cur?.id === p.id ? { ...cur, status: 'rejected', rejectionReason: finalReason } : cur))
+      }
+      return
+    }
+    props.update((d) => {
+      const x = d.properties.find((y) => y.id === p.id)
+      if (x) { x.status = 'rejected'; x.verified = false; x.rejectionReason = finalReason }
+      return d
+    })
+    setSelectedAdminPg((cur) => (cur?.id === p.id ? { ...cur, status: 'rejected', rejectionReason: finalReason } : cur))
+    props.showToast('PG reject kar diya gaya — owner ko reason dikhega.')
+  }
+
+  /** Verify / unverify an owner (API or local). */
+  async function verifyOwnerToggle(o: { id: string; phone: string; verifiedOwner: boolean }) {
+    const next = !o.verifiedOwner
+    if (apiConfigured() && adminOwnersList !== null) {
+      try {
+        await apiVerifyOwner(o.id, next)
+        await loadAdminOwners()
+        props.showToast(next ? 'Owner verify ho gaya.' : 'Owner unverified kar diya gaya.')
+      } catch (err) {
+        props.showToast(apiErrorMessage(err))
+      }
+      return
+    }
+    props.update((d) => {
+      const u = d.users.find((x) => x.id === o.id || x.phone === o.phone)
+      if (u) u.verifiedOwner = next
+      return d
+    })
+    props.showToast(next ? 'Owner verify ho gaya.' : 'Owner unverified kar diya gaya.')
+  }
+
+  /** Approval-status badge for a listing. */
+  function adminStatusBadge(p: Property) {
+    if (p.status === 'pending') return <span className="badge badge-pending"><ShieldAlert size={12} /> Pending approval</span>
+    if (p.status === 'rejected') return <span className="badge badge-rejected"><X size={12} /> Rejected</span>
+    if (p.verified) return <span className="badge badge-verified"><ShieldCheck size={12} /> Verified</span>
+    return <span className="badge badge-unverified"><ShieldAlert size={12} /> Not Verified</span>
+  }
+
+  /** One listing row with Approve / Reject / Verify / Delete — reused by
+      All / Verified / Unverified / Pending sections. */
   function listingRow(p: Property) {
     return (
       <div className="review" key={p.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.name}</b> — {p.locality}, {p.city} • {inr(p.rent)} • {p.availableBeds}/{p.totalBeds} beds<br />
-          <span className="muted small">Owner: {p.ownerPhone} • {timeAgo(p.createdAt)}</span></div>
+        <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.name}</b> — {p.locality}, {p.city} • {inr(p.rent)} • {p.availableBeds}/{p.totalBeds} beds {adminStatusBadge(p)}<br />
+          <span className="muted small">Owner: {p.ownerPhone} • {timeAgo(p.createdAt)}</span>
+          {p.status === 'rejected' && p.rejectionReason && <><br /><span className="small" style={{ color: '#b3261e' }}>Reject reason: {p.rejectionReason}</span></>}
+        </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {p.status === 'pending' && (
+            <>
+              <button className="btn btn-sm" style={{ background: '#0e7a5f', color: '#fff' }} onClick={() => void approvePG(p)}>Approve ✓</button>
+              <button className="btn btn-danger btn-sm" onClick={() => void rejectPG(p)}>Reject</button>
+            </>
+          )}
           <button className="btn btn-sm" onClick={async () => {
-            if (props.apiIds.has(p.id)) {
+            if (props.apiIds.has(p.id) || adminListings !== null) {
               await props.onApiVerify(p.id, !p.verified)
+              await loadAdminListings()
               return
             }
             props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) x.verified = !x.verified; return d })
@@ -1906,8 +2919,9 @@ function AdminView(props: {
           </button>
           <button className="btn btn-danger btn-sm" onClick={async () => {
             if (!confirm(`"${p.name}" delete karna hai?`)) return
-            if (props.apiIds.has(p.id)) {
+            if (props.apiIds.has(p.id) || adminListings !== null) {
               await props.onApiDelete(p.id)
+              await loadAdminListings()
               return
             }
             props.update((d) => { d.properties = d.properties.filter((y) => y.id !== p.id); return d })
@@ -2056,9 +3070,9 @@ function AdminView(props: {
         {props.section === 'dashboard' && (
           <>
             <div className="stat-tiles">
-              <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.properties.length}</b><span>Total PGs</span></div>
-              <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.properties.filter((p) => p.verified).length}</b><span>Verified</span></div>
-              <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.users.length}</b><span>Users ({owners.length} owners)</span></div>
+              <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{adminProps.length}</b><span>Total PGs</span></div>
+              <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{verifiedList.length}</b><span>Verified</span></div>
+              <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{pendingList.length}</b><span>Pending approval</span></div>
               <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.enquiries.length}</b><span>Enquiries</span></div>
             </div>
             <div className="panel">
@@ -2070,7 +3084,7 @@ function AdminView(props: {
             <div className="panel">
               <h3 style={{ marginTop: 0 }}>Aaj kya karein?</h3>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button className="btn btn-orange" onClick={() => props.setSection('unverified')}><ShieldAlert size={16} /> Verify Queue — {unverifiedList.length} pending</button>
+                <button className="btn btn-orange" onClick={() => props.setSection('pending')}><ShieldAlert size={16} /> Approval Queue — {pendingList.length} pending</button>
                 <button className="btn btn-ghost" onClick={() => props.setSection('owners')}><Users size={16} /> Owners ({owners.length})</button>
                 <button className="btn btn-ghost" onClick={() => props.setSection('enquiries')}><MessageSquare size={16} /> Enquiries ({db.enquiries.length})</button>
                 <button className="btn btn-ghost" onClick={() => props.setSection('complaints')}><ClipboardList size={16} /> Complaints ({db.complaints.filter((c) => c.status === 'Open').length} open)</button>
@@ -2086,23 +3100,144 @@ function AdminView(props: {
                 : props.section === 'verified' ? `Verified PGs (${verifiedList.length})`
                 : `Unverified PGs — Verify Queue (${unverifiedList.length})`}
             </h3>
-            {props.section === 'unverified' && <p className="muted small">Ye listings public Google Maps / OLX se aayi hain ya owner ne list ki hain — jaanch karke Verify Karo dabao, tabhi Verified badge lagega.</p>}
-            {props.section === 'all' && db.properties.length === 0 && <p className="muted">Abhi koi listing nahi hai. Pehla owner List PG karega, tab yahan aayega.</p>}
+            {props.section === 'unverified' && <p className="muted small">Ye listings public Google Maps / OLX se aayi hain ya owner ne list ki hain — jaanch karke Verify Karo dabao, tabhi Verified badge lagega. Pending approval wale PGs ke liye Approve / Reject bhi yahin se karo.</p>}
+            {props.section === 'all' && adminProps.length === 0 && <p className="muted">Abhi koi listing nahi hai. Pehla owner List PG karega, tab yahan aayega.</p>}
             {props.section === 'verified' && verifiedList.length === 0 && <p className="muted">Abhi koi Verified PG nahi hai — Unverified tab se verify karo.</p>}
             {props.section === 'unverified' && unverifiedList.length === 0 && <p className="muted">Saare PG verified hain — koi pending nahi hai. 🎉</p>}
-            {(props.section === 'all' ? db.properties : props.section === 'verified' ? verifiedList : unverifiedList).map((p) => listingRow(p))}
+            {(props.section === 'all' ? adminProps : props.section === 'verified' ? verifiedList : unverifiedList).map((p) => listingRow(p))}
+          </div>
+        )}
+
+        {props.section === 'pending' && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>Pending Approvals ({pendingList.length})</h3>
+            <p className="muted small">Owner ne naye PG add kiye hain — jaanch karke Approve karo (tabhi public search me live hoga) ya reason deke Reject karo.</p>
+            {pendingList.length === 0 && <p className="muted">Koi PG approval ke liye pending nahi hai. 🎉</p>}
+            {pendingList.map((p) => listingRow(p))}
+          </div>
+        )}
+
+        {props.section === 'pgdetails' && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>PG Details — Search, Filter, Edit</h3>
+            <div className="form-grid-2">
+              <div>
+                <label style={{ margin: '0 0 4px' }}>Search</label>
+                <input value={pgSearch} onChange={(e) => setPgSearch(e.target.value)} placeholder="PG ya area ka naam…" />
+              </div>
+              <div>
+                <label style={{ margin: '0 0 4px' }}>Status</label>
+                <select value={pgStatus} onChange={(e) => setPgStatus(e.target.value as 'All' | 'pending' | 'live' | 'rejected')}>
+                  <option value="All">All statuses</option>
+                  <option value="pending">Pending</option>
+                  <option value="live">Live</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ margin: '0 0 4px' }}>City</label>
+                <select value={pgCity} onChange={(e) => setPgCity(e.target.value as 'All' | City)}>
+                  <option value="All">Both cities</option>
+                  <option value="Hazaribagh">Hazaribagh</option>
+                  <option value="Ranchi">Ranchi</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ margin: '0 0 4px' }}>Owner</label>
+                <select value={pgOwner} onChange={(e) => setPgOwner(e.target.value)}>
+                  <option value="All">All owners</option>
+                  {[...new Set(adminProps.map((p) => p.ownerPhone))].map((ph) => (
+                    <option key={ph} value={ph}>{ph}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            {adminProps.filter((p) => {
+              if (pgStatus !== 'All' && p.status !== pgStatus) return false
+              if (pgCity !== 'All' && p.city !== pgCity) return false
+              if (pgOwner !== 'All' && p.ownerPhone !== pgOwner) return false
+              if (pgSearch.trim() && !(p.name + p.locality + p.address).toLowerCase().includes(pgSearch.trim().toLowerCase())) return false
+              return true
+            }).map((p) => (
+              <div className="review" key={p.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                  <b>{p.name}</b> — {p.locality}, {p.city} • {inr(p.rent)} {adminStatusBadge(p)}<br />
+                  <span className="muted small">Owner: {p.ownerPhone} • {p.gender} • {p.availableBeds}/{p.totalBeds} beds • {timeAgo(p.createdAt)}</span>
+                </div>
+                <button className="btn btn-sm" onClick={() => { setSelectedAdminPg(p); setEditingAdminId(null) }}>Details Dekho</button>
+              </div>
+            ))}
+            {selectedAdminPg && (
+              <AdminPGDetail
+                p={selectedAdminPg}
+                editing={editingAdminId === selectedAdminPg.id}
+                onToggleEdit={() => setEditingAdminId(editingAdminId === selectedAdminPg.id ? null : selectedAdminPg.id)}
+                onClose={() => { setSelectedAdminPg(null); setEditingAdminId(null) }}
+                showToast={props.showToast}
+                onApprove={() => void approvePG(selectedAdminPg)}
+                onReject={() => void rejectPG(selectedAdminPg)}
+                onVerify={async () => {
+                  const p = selectedAdminPg
+                  if (props.apiIds.has(p.id) || adminListings !== null) {
+                    await props.onApiVerify(p.id, !p.verified)
+                    await loadAdminListings()
+                    setSelectedAdminPg((cur) => (cur ? { ...cur, verified: !cur.verified } : cur))
+                    return
+                  }
+                  props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) x.verified = !x.verified; return d })
+                  setSelectedAdminPg((cur) => (cur ? { ...cur, verified: !cur.verified } : cur))
+                }}
+                onDelete={async () => {
+                  const p = selectedAdminPg
+                  if (!confirm(`"${p.name}" delete karna hai?`)) return
+                  if (props.apiIds.has(p.id) || adminListings !== null) {
+                    await props.onApiDelete(p.id)
+                    await loadAdminListings()
+                  } else {
+                    props.update((d) => { d.properties = d.properties.filter((y) => y.id !== p.id); return d })
+                  }
+                  setSelectedAdminPg(null)
+                }}
+                onSave={async (patch) => {
+                  const p = selectedAdminPg
+                  if (props.apiIds.has(p.id) || adminListings !== null) {
+                    const ok = await props.onApiUpdate(p.id, propertyToApiListing({ ...p, ...patch }))
+                    if (ok) {
+                      await loadAdminListings()
+                      setSelectedAdminPg((cur) => (cur ? { ...cur, ...patch } : cur))
+                      setEditingAdminId(null)
+                    }
+                    return
+                  }
+                  props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) Object.assign(x, patch); return d })
+                  setSelectedAdminPg((cur) => (cur ? { ...cur, ...patch } : cur))
+                  setEditingAdminId(null)
+                  props.showToast('PG update ho gaya.')
+                }}
+              />
+            )}
           </div>
         )}
 
         {props.section === 'owners' && (
           <div className="panel">
             <h3 style={{ marginTop: 0 }}>Owners Directory</h3>
-            {owners.length === 0 && <p className="muted">Abhi koi owner account nahi hai.</p>}
+            {adminOwnersView.length === 0 && <p className="muted">Abhi koi owner account nahi hai.</p>}
             <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>Owner</th><th>Phone</th><th>PGs</th><th>PIN</th></tr></thead>
-              <tbody>{owners.map((o) => (
-                <tr key={o.id}><td>{o.name}</td><td>{o.phone}</td><td>{db.properties.filter((p) => p.ownerPhone === o.phone).length}</td><td>{o.pinHash ? 'Set hai' : 'Nahi set'}</td></tr>
+              <thead><tr><th>Owner</th><th>Phone</th><th>PGs</th><th>PIN</th><th>Verification</th></tr></thead>
+              <tbody>{adminOwnersView.map((o) => (
+                <tr key={o.id}>
+                  <td>{o.name} {o.verifiedOwner && <span className="badge badge-verified"><ShieldCheck size={12} /> Verified Owner</span>}</td>
+                  <td>{o.phone}</td>
+                  <td>{o.pgCount}</td>
+                  <td>{adminOwnersList === null && owners.find((x) => x.id === o.id)?.pinHash ? 'Set hai' : adminOwnersList === null ? 'Nahi set' : '—'}</td>
+                  <td>
+                    <button className="btn btn-sm" onClick={() => void verifyOwnerToggle(o)}>
+                      {o.verifiedOwner ? 'Unverify Owner' : 'Verify Owner ✓'}
+                    </button>
+                  </td>
+                </tr>
               ))}</tbody>
             </table>
             </div>
@@ -2207,6 +3342,64 @@ function AdminView(props: {
         <p className="small muted">Note: Ye demo localStorage par chalta hai — data isi browser/device me save hota hai. Production me iski jagah server database hoga.</p>
       </div>
     </section>
+  )
+}
+
+/* ---------------- Super Admin: one PG, every field + actions ---------------- */
+function AdminPGDetail(props: {
+  p: Property
+  editing: boolean
+  onToggleEdit: () => void
+  onClose: () => void
+  showToast: (m: string) => void
+  onApprove: () => void
+  onReject: () => void
+  onVerify: () => void
+  onDelete: () => void
+  onSave: (patch: Partial<Property>) => Promise<void> | void
+}) {
+  const { p } = props
+  return (
+    <div className="panel" style={{ background: '#f8fafc', marginTop: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div>
+          <h3 style={{ margin: 0 }}>{p.name}</h3>
+          <p className="muted small" style={{ margin: '4px 0' }}>{p.address}, {p.locality}, {p.city}</p>
+        </div>
+        <button className="close-btn" onClick={props.onClose} aria-label="Close"><X size={18} /></button>
+      </div>
+      <table className="table" style={{ marginTop: 12 }}>
+        <tbody>
+          <tr><td><b>Status</b></td><td>{p.status ?? '— (seeded / live)'}</td></tr>
+          <tr><td><b>Verified</b></td><td>{p.verified ? 'Yes ✓' : 'No'}</td></tr>
+          {p.status === 'rejected' && <tr><td><b>Reject reason</b></td><td>{p.rejectionReason || '—'}</td></tr>}
+          <tr><td><b>Rent</b></td><td>{inr(p.rent)}/month • Deposit {inr(p.deposit)}</td></tr>
+          <tr><td><b>Gender</b></td><td>{p.gender} • {p.sharing}</td></tr>
+          <tr><td><b>Beds</b></td><td>{p.availableBeds} / {p.totalBeds} free</td></tr>
+          <tr><td><b>Mess</b></td><td>{p.foodIncluded ? `Yes${p.foodNote ? ` — ${p.foodNote}` : ''}` : 'No'}</td></tr>
+          <tr><td><b>Facilities</b></td><td>{p.facilities.join(', ') || '—'}</td></tr>
+          <tr><td><b>Rules</b></td><td>{p.rules || '—'}</td></tr>
+          <tr><td><b>Owner</b></td><td>{p.ownerPhone} (id: {p.ownerId})</td></tr>
+          <tr><td><b>Listed</b></td><td>{timeAgo(p.createdAt)}</td></tr>
+          {p.rating !== undefined && <tr><td><b>Rating</b></td><td>{p.rating}{p.reviewCount !== undefined ? ` (${p.reviewCount} reviews)` : ''}</td></tr>}
+          {p.source && <tr><td><b>Source</b></td><td>{p.source}</td></tr>}
+        </tbody>
+      </table>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+        {p.status === 'pending' && (
+          <>
+            <button className="btn btn-sm" style={{ background: '#0e7a5f', color: '#fff' }} onClick={props.onApprove}>Approve ✓ — Live + Verified</button>
+            <button className="btn btn-danger btn-sm" onClick={props.onReject}>Reject (reason poochhega)</button>
+          </>
+        )}
+        <button className="btn btn-sm" onClick={props.onVerify}>{p.verified ? 'Unverify Karo' : 'Verify Karo ✓'}</button>
+        <button className="btn btn-ghost btn-sm" onClick={props.onToggleEdit}>{props.editing ? 'Edit Band Karo' : 'Edit Karo'}</button>
+        <button className="btn btn-danger btn-sm" onClick={props.onDelete}>Delete</button>
+      </div>
+      {props.editing && (
+        <OwnerEditPGForm p={p} onCancel={props.onToggleEdit} onSave={props.onSave} showToast={props.showToast} />
+      )}
+    </div>
   )
 }
 

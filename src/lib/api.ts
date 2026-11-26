@@ -228,6 +228,9 @@ export interface ApiListing {
   maps_url?: string
   mapsUrl?: string
   verified?: boolean
+  /** Approval workflow (new backend contract). */
+  status?: 'pending' | 'live' | 'rejected'
+  rejection_reason?: string | null
   total_beds?: number
   totalBeds?: number
   available_beds?: number
@@ -336,6 +339,8 @@ export function apiListingToProperty(raw: ApiListing): Property {
     rules: (raw.rules ?? '').toString(),
     mapsQuery: (raw.maps_url ?? raw.mapsUrl ?? undefined) as string | undefined,
     verified: Boolean(raw.verified),
+    status: raw.status === 'pending' || raw.status === 'live' || raw.status === 'rejected' ? raw.status : undefined,
+    rejectionReason: raw.rejection_reason ?? undefined,
     createdAt: (raw.created_at ?? raw.createdAt ?? new Date().toISOString()).toString(),
     rating: typeof raw.rating === 'number' ? raw.rating : undefined,
     reviewCount:
@@ -632,4 +637,279 @@ export async function getOwnerEnquiries(): Promise<unknown[]> {
     if (err instanceof ApiError && err.status === 404) return []
     throw err
   }
+}
+
+/* ---------------- approval workflow (admin) ---------------- */
+
+export interface AdminOwner {
+  id: string | number
+  name: string
+  whatsapp: string
+  role: string
+  verified_owner: boolean
+  listings_count: number
+  created_at?: string
+}
+
+/** GET /api/admin/listings — all listings incl. pending/rejected. */
+export async function adminListings(params: {
+  status?: string
+  city?: string
+  owner_id?: string | number
+} = {}): Promise<ApiListing[]> {
+  const qs = toQuery({
+    status: params.status,
+    city: params.city,
+    owner_id: params.owner_id,
+  })
+  const data = await request<unknown>(`/api/admin/listings${qs}`, { token: 'admin' })
+  if (Array.isArray(data)) return data as ApiListing[]
+  const obj = (data ?? {}) as { items?: ApiListing[] }
+  return obj.items ?? []
+}
+
+export async function approveListing(id: string | number): Promise<ApiListing> {
+  return request<ApiListing>(`/api/admin/listings/${encodeURIComponent(String(id))}/approve`, {
+    method: 'POST',
+    token: 'admin',
+  })
+}
+
+export async function rejectListing(id: string | number, reason: string): Promise<ApiListing> {
+  return request<ApiListing>(`/api/admin/listings/${encodeURIComponent(String(id))}/reject`, {
+    method: 'POST',
+    body: { reason },
+    token: 'admin',
+  })
+}
+
+export async function adminOwners(): Promise<AdminOwner[]> {
+  const data = await request<unknown>('/api/admin/owners', { token: 'admin' })
+  if (Array.isArray(data)) return data as AdminOwner[]
+  const obj = (data ?? {}) as { items?: AdminOwner[] }
+  return obj.items ?? []
+}
+
+export async function verifyOwner(id: string | number, verified: boolean): Promise<AdminOwner> {
+  return request<AdminOwner>(`/api/admin/owners/${encodeURIComponent(String(id))}/verify`, {
+    method: 'POST',
+    body: { verified },
+    token: 'admin',
+  })
+}
+
+/* ---------------- owner: verification + summary ---------------- */
+
+export interface OwnerMe {
+  id: string | number
+  name: string
+  whatsapp: string
+  role: string
+  verified_owner: boolean
+}
+
+export async function getOwnerMe(): Promise<OwnerMe> {
+  return request<OwnerMe>('/api/owner/me', { token: 'user' })
+}
+
+export interface OwnerSummary {
+  listings_count?: number
+  verified_count?: number
+  pending_count?: number
+  live_count?: number
+  verified_owner?: boolean
+  tenants_count?: number
+  enquiries_count?: number
+  enquiries_new?: number
+  complaints_open?: number
+  rent_pending_amount?: number
+  rent_paid_amount?: number
+  [key: string]: unknown
+}
+
+export async function getOwnerSummary(): Promise<OwnerSummary> {
+  return request<OwnerSummary>('/api/owner/summary', { token: 'user' })
+}
+
+/* ---------------- owner: tenants ---------------- */
+
+export interface ApiTenant {
+  id: string | number
+  listing_id: string | number
+  name: string
+  whatsapp: string
+  room?: string
+  bed?: string
+  rent: number
+  move_in_date?: string | null
+  moved_out?: boolean
+  moved_out_date?: string | null
+  created_at?: string
+}
+
+export async function createTenant(body: {
+  listing_id: string | number
+  name: string
+  whatsapp: string
+  room?: string
+  bed?: string
+  rent: number
+  move_in_date?: string
+}): Promise<ApiTenant> {
+  return request<ApiTenant>('/api/owner/tenants', { method: 'POST', body, token: 'user' })
+}
+
+export async function listTenants(listingId?: string | number): Promise<ApiTenant[]> {
+  const qs = toQuery({ listing_id: listingId })
+  const data = await request<unknown>(`/api/owner/tenants${qs}`, { token: 'user' })
+  if (Array.isArray(data)) return data as ApiTenant[]
+  const obj = (data ?? {}) as { items?: ApiTenant[] }
+  return obj.items ?? []
+}
+
+export async function updateTenant(
+  id: string | number,
+  patch: { moved_out?: boolean; moved_out_date?: string | null; room?: string; bed?: string; rent?: number },
+): Promise<ApiTenant> {
+  return request<ApiTenant>(`/api/owner/tenants/${encodeURIComponent(String(id))}`, {
+    method: 'PATCH',
+    body: patch,
+    token: 'user',
+  })
+}
+
+/* ---------------- owner: tenant documents ---------------- */
+
+export interface ApiTenantDocument {
+  id: string | number
+  tenant_id: string | number
+  doc_type: string
+  doc_number?: string | null
+  agreement_date?: string | null
+  police_verification: 'pending' | 'done' | 'not_required'
+  created_at?: string
+}
+
+export async function listDocuments(tenantId: string | number): Promise<ApiTenantDocument[]> {
+  const data = await request<unknown>(`/api/owner/tenants/${encodeURIComponent(String(tenantId))}/documents`, {
+    token: 'user',
+  })
+  if (Array.isArray(data)) return data as ApiTenantDocument[]
+  const obj = (data ?? {}) as { items?: ApiTenantDocument[] }
+  return obj.items ?? []
+}
+
+export async function createDocument(
+  tenantId: string | number,
+  body: { doc_type: string; doc_number?: string; agreement_date?: string; police_verification: string },
+): Promise<ApiTenantDocument> {
+  return request<ApiTenantDocument>(`/api/owner/tenants/${encodeURIComponent(String(tenantId))}/documents`, {
+    method: 'POST',
+    body,
+    token: 'user',
+  })
+}
+
+export async function updateDocument(
+  id: string | number,
+  patch: { doc_type?: string; doc_number?: string; agreement_date?: string; police_verification?: string },
+): Promise<ApiTenantDocument> {
+  return request<ApiTenantDocument>(`/api/owner/documents/${encodeURIComponent(String(id))}`, {
+    method: 'PATCH',
+    body: patch,
+    token: 'user',
+  })
+}
+
+/* ---------------- owner: mess ---------------- */
+
+export interface ApiMessConfig {
+  listing_id: string | number
+  enabled: boolean
+  monthly_fee: number
+  menu: Record<string, string[]>
+}
+
+export async function getMessConfig(listingId: string | number): Promise<ApiMessConfig> {
+  return request<ApiMessConfig>(`/api/owner/listings/${encodeURIComponent(String(listingId))}/mess`, {
+    token: 'user',
+  })
+}
+
+export async function saveMessConfig(
+  listingId: string | number,
+  body: { enabled: boolean; monthly_fee: number; menu: Record<string, string[]> },
+): Promise<ApiMessConfig> {
+  return request<ApiMessConfig>(`/api/owner/listings/${encodeURIComponent(String(listingId))}/mess`, {
+    method: 'PUT',
+    body,
+    token: 'user',
+  })
+}
+
+export interface ApiMessPayment {
+  id: string | number
+  listing_id: string | number
+  tenant_id: string | number
+  month: string
+  amount: number
+  status: string
+}
+
+export async function listMessPayments(params: {
+  listing_id?: string | number
+  month?: string
+} = {}): Promise<ApiMessPayment[]> {
+  const qs = toQuery({ listing_id: params.listing_id, month: params.month })
+  const data = await request<unknown>(`/api/owner/mess-payments${qs}`, { token: 'user' })
+  if (Array.isArray(data)) return data as ApiMessPayment[]
+  const obj = (data ?? {}) as { items?: ApiMessPayment[] }
+  return obj.items ?? []
+}
+
+export async function createMessPayment(body: {
+  listing_id: string | number
+  tenant_id: string | number
+  month: string
+  amount: number
+  status: string
+}): Promise<ApiMessPayment> {
+  return request<ApiMessPayment>('/api/owner/mess-payments', { method: 'POST', body, token: 'user' })
+}
+
+/* ---------------- owner: rent records (method: upi | cash) ---------------- */
+
+export interface ApiRentRecord {
+  id: string | number
+  listing_id: string | number
+  tenant_name: string
+  tenant_whatsapp?: string | null
+  month: string
+  amount: number
+  status: string
+  method?: 'upi' | 'cash' | null
+  notes?: string | null
+  paid_at?: string | null
+  created_at?: string
+}
+
+export async function listRentRecords(listingId?: string | number): Promise<ApiRentRecord[]> {
+  const qs = toQuery({ listing_id: listingId })
+  const data = await request<unknown>(`/api/owner/rent${qs}`, { token: 'user' })
+  if (Array.isArray(data)) return data as ApiRentRecord[]
+  const obj = (data ?? {}) as { items?: ApiRentRecord[] }
+  return obj.items ?? []
+}
+
+export async function createRentRecord(body: {
+  listing_id: string | number
+  tenant_name: string
+  tenant_whatsapp?: string
+  month: string
+  amount: number
+  status?: string
+  method?: 'upi' | 'cash'
+  notes?: string
+}): Promise<ApiRentRecord> {
+  return request<ApiRentRecord>('/api/owner/rent', { method: 'POST', body, token: 'user' })
 }

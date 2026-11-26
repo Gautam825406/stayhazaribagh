@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import relationship
 
@@ -35,6 +36,8 @@ class User(Base):
     whatsapp = Column(String(20), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(20), nullable=False, default="tenant")  # tenant | owner
+    verified_owner = Column(Boolean, nullable=False, default=False,
+                            server_default=text("false"))
     failed_login_attempts = Column(Integer, nullable=False, default=0)
     locked_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=_now)
@@ -109,6 +112,11 @@ class Listing(Base):
     source_url = Column(Text, nullable=True)
     maps = Column(Text, nullable=True)
     verified = Column(Boolean, nullable=False, default=False)
+    # pending | live | rejected — new owner listings start pending and are
+    # hidden from the public list until an admin approves them.
+    status = Column(String(20), nullable=False, default="live",
+                    server_default=text("'live'"))
+    rejection_reason = Column(Text, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=_now)
     updated_at = Column(DateTime, nullable=False, default=_now, onupdate=_now)
@@ -122,6 +130,12 @@ class Listing(Base):
                               cascade="all, delete-orphan")
     rent_records = relationship("RentRecord", back_populates="listing",
                                 cascade="all, delete-orphan")
+    tenants = relationship("Tenant", back_populates="listing",
+                           cascade="all, delete-orphan")
+    mess_config = relationship("MessConfig", back_populates="listing",
+                               uselist=False, cascade="all, delete-orphan")
+    mess_payments = relationship("MessPayment", back_populates="listing",
+                                 cascade="all, delete-orphan")
 
 
 class Enquiry(Base):
@@ -190,6 +204,8 @@ class RentRecord(Base):
     amount = Column(Float, nullable=False)
     # pending | paid | overdue
     status = Column(String(20), nullable=False, default="pending")
+    # upi | cash (how the tenant paid; NULL for older records)
+    method = Column(String(10), nullable=True)
     notes = Column(Text, nullable=True)
     paid_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=_now)
@@ -200,3 +216,81 @@ class RentRecord(Base):
         UniqueConstraint("listing_id", "tenant_whatsapp", "month",
                          name="uq_rent_listing_tenant_month"),
     )
+
+
+class Tenant(Base):
+    """A tenant actually staying in one of an owner's PGs (owner-managed
+    onboarding — separate from enquiries, which are just visit requests)."""
+
+    __tablename__ = "tenants"
+
+    id = Column(Integer, primary_key=True, index=True)
+    listing_id = Column(Integer, ForeignKey("listings.id"), nullable=False)
+    name = Column(String(120), nullable=False)
+    whatsapp = Column(String(20), nullable=False, index=True)
+    room = Column(String(40), nullable=False, default="")
+    bed = Column(String(40), nullable=False, default="")
+    rent = Column(Float, nullable=False, default=0)
+    move_in_date = Column(String(20), nullable=True)  # YYYY-MM-DD
+    moved_out = Column(Boolean, nullable=False, default=False)
+    moved_out_date = Column(String(20), nullable=True)  # YYYY-MM-DD
+    created_at = Column(DateTime, nullable=False, default=_now)
+
+    listing = relationship("Listing", back_populates="tenants")
+    documents = relationship("TenantDocument", back_populates="tenant",
+                             cascade="all, delete-orphan")
+    mess_payments = relationship("MessPayment", back_populates="tenant",
+                                 cascade="all, delete-orphan")
+
+
+class TenantDocument(Base):
+    """A KYC / agreement document for a tenant (Aadhaar, agreement,
+    police verification status)."""
+
+    __tablename__ = "tenant_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    doc_type = Column(String(80), nullable=False)
+    doc_number = Column(String(80), nullable=True)
+    agreement_date = Column(String(20), nullable=True)  # YYYY-MM-DD
+    # pending | done | not_required
+    police_verification = Column(String(20), nullable=False,
+                                 default="pending")
+    created_at = Column(DateTime, nullable=False, default=_now)
+
+    tenant = relationship("Tenant", back_populates="documents")
+
+
+class MessConfig(Base):
+    """Per-listing mess settings (one row per listing). `menu` stores a
+    JSON object, e.g. {"monday": ["Dal", "Rice"], ...}."""
+
+    __tablename__ = "mess_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    listing_id = Column(Integer, ForeignKey("listings.id"), unique=True,
+                        nullable=False)
+    enabled = Column(Boolean, nullable=False, default=False)
+    monthly_fee = Column(Float, nullable=False, default=0)
+    menu = Column(Text, nullable=False, default="{}")
+
+    listing = relationship("Listing", back_populates="mess_config")
+
+
+class MessPayment(Base):
+    """A monthly mess-fee payment for one tenant in one listing."""
+
+    __tablename__ = "mess_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    listing_id = Column(Integer, ForeignKey("listings.id"), nullable=False)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    month = Column(String(20), nullable=False)  # e.g. "2026-11"
+    amount = Column(Float, nullable=False)
+    # pending | paid | overdue
+    status = Column(String(20), nullable=False, default="pending")
+    created_at = Column(DateTime, nullable=False, default=_now)
+
+    listing = relationship("Listing", back_populates="mess_payments")
+    tenant = relationship("Tenant", back_populates="mess_payments")

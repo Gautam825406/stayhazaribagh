@@ -28,6 +28,8 @@ interface DashboardSidebarProps {
   /** Mobile drawer: open state + close handler. Ignored on desktop. */
   drawerOpen: boolean
   onCloseDrawer: () => void
+  /** Teal "Verified Owner" badge in the user chip (owner portal). */
+  verifiedBadge?: boolean
   onLogout?: () => void
   logoutLabel?: string
 }
@@ -59,6 +61,9 @@ export default function DashboardSidebar(props: DashboardSidebarProps) {
             <span className="dash-user-text">
               <b>{props.userName}</b>
               <span>{props.userRole}</span>
+              {props.verifiedBadge && (
+                <span className="badge badge-verified" style={{ marginTop: 4, alignSelf: 'flex-start' }}>✓ Verified Owner</span>
+              )}
             </span>
           </div>
           <button className="dash-close" onClick={props.onCloseDrawer} aria-label="Menu band karo">

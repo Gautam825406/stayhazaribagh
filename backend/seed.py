@@ -152,6 +152,7 @@ def row_to_listing(row: dict, sheet: str) -> Listing:
         source_url=_clean_str(row.get("source_url")),
         maps=_clean_str(row.get("maps")),
         verified=False,
+        status="live",
         owner_id=None,
     )
 

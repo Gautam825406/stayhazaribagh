@@ -15,6 +15,8 @@ export interface User {
   salt: string
   passwordHash: string
   pinHash?: string // owner portal PIN (hashed)
+  /** True once Super Admin verifies the owner (or their first PG is approved). */
+  verifiedOwner?: boolean
   createdAt: string
 }
 
@@ -39,6 +41,11 @@ export interface Property {
   mapsQuery?: string // optional free-text for Google Maps
   verified: boolean
   createdAt: string
+  /** Approval workflow: owner-added PGs start 'pending' (hidden from public
+      search until Super Admin approves them → 'live'). Seeded PGs have no
+      status (undefined) and keep showing as before. */
+  status?: 'pending' | 'live' | 'rejected'
+  rejectionReason?: string
   // Optional extras carried from the backend (src/lib/api.ts) — never invented locally.
   rating?: number // backend average rating, when the API supplies one
   reviewCount?: number // backend review count, when the API supplies one
@@ -79,6 +86,56 @@ export interface TenantRecord {
   dueAmount: number
   kycDone: boolean
   joinedAt: string
+  /** Move-in date (YYYY-MM-DD) from the add-tenant form. */
+  moveInDate?: string
+  movedOut?: boolean
+  movedOutDate?: string
+}
+
+/** Rent payment record — one row per tenant per month. `method` is the
+    payment mode (UPI / cash); history is shown in Rent & Dues. */
+export interface RentRecord {
+  id: string
+  propertyId: string
+  tenantId?: string
+  tenantName: string
+  month: string // YYYY-MM
+  amount: number
+  method?: 'upi' | 'cash'
+  status: 'paid' | 'pending'
+  createdAt: string
+}
+
+export type PoliceVerification = 'pending' | 'done' | 'not_required'
+
+/** Per-tenant document / KYC record (ID proof + agreement + police verification). */
+export interface TenantDocument {
+  id: string
+  tenantId: string
+  propertyId: string
+  docType: string // Aadhaar / PAN / Voter ID / Passport / Driving Licence
+  docNumber?: string
+  agreementDate?: string // YYYY-MM-DD
+  policeVerification: PoliceVerification
+  createdAt: string
+}
+
+/** Per-PG mess configuration: on/off, monthly fee and a Mon–Sun menu. */
+export interface MessConfig {
+  enabled: boolean
+  monthlyFee: number
+  menu: Record<string, string[]> // e.g. { Monday: ['Dal', 'Chawal', ...] }
+}
+
+/** One mess-fee collection row per tenant per month. */
+export interface MessPayment {
+  id: string
+  propertyId: string
+  tenantId: string
+  month: string // YYYY-MM
+  amount: number
+  status: 'paid' | 'pending'
+  createdAt: string
 }
 
 export interface Complaint {
@@ -121,6 +178,10 @@ export interface DB {
   reviews: Review[]
   enquiries: Enquiry[]
   tenants: TenantRecord[]
+  rentPayments: RentRecord[]
+  documents: TenantDocument[]
+  messConfigs: Record<string, MessConfig>
+  messPayments: MessPayment[]
   complaints: Complaint[]
   settings: Settings
   session: Session | null
@@ -145,6 +206,10 @@ export function emptyDB(): DB {
     reviews: [],
     enquiries: [],
     tenants: [],
+    rentPayments: [],
+    documents: [],
+    messConfigs: {},
+    messPayments: [],
     complaints: [],
     settings: { adminPasscodeHash: null, adminSalt: null },
     session: null,
@@ -159,7 +224,18 @@ export function loadDB(): DB {
     const raw = localStorage.getItem(KEY)
     if (!raw) return emptyDB()
     const parsed = JSON.parse(raw) as Partial<DB>
-    return { ...emptyDB(), ...parsed, settings: { ...emptyDB().settings, ...(parsed.settings || {}) } }
+    // Merge over emptyDB() so old saved data (without the newer arrays)
+    // still loads instead of crashing on undefined.
+    return {
+      ...emptyDB(),
+      ...parsed,
+      settings: { ...emptyDB().settings, ...(parsed.settings || {}) },
+      tenants: (parsed.tenants ?? []).map((t) => ({ ...t })),
+      rentPayments: parsed.rentPayments ?? [],
+      documents: parsed.documents ?? [],
+      messConfigs: parsed.messConfigs ?? {},
+      messPayments: parsed.messPayments ?? [],
+    }
   } catch {
     return emptyDB()
   }
