@@ -31,7 +31,7 @@ import sys
 # Allow running as `python backend/seed.py` as well as `python -m backend.seed`.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.database import Base, SessionLocal, engine  # noqa: E402
+from backend.database import Base, SessionLocal, engine, ensure_schema  # noqa: E402
 from backend.models import Listing  # noqa: E402
 
 DEFAULT_SEED_PATH = os.path.expanduser(
@@ -167,6 +167,14 @@ def main() -> int:
         for row in data.get(sheet_key, []):
             rows.append(row)
 
+    # MUST run before any query: create_all() cannot add columns to an
+    # existing table, and the new Listing model selects status /
+    # rejection_reason — on a production DB from an older deploy the
+    # seed would crash with "column listings.status does not exist"
+    # (Render deploy of 79b60414 failed exactly this way). ensure_schema
+    # ALTERs only missing columns and backfills them; safe on both
+    # Postgres and SQLite, and never raises.
+    ensure_schema()
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
