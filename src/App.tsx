@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  BadgeCheck, BedDouble, BookOpen, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Crown, Home,
-  KeyRound, LogOut, MapPin, MessageSquare, Navigation, Phone, Plus, Search,
-  ShieldCheck, ShieldAlert, Star, UserRound, UtensilsCrossed, Wallet, X,
+  BadgeCheck, BedDouble, BookOpen, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Crown, Heart, Home,
+  KeyRound, LayoutDashboard, LogOut, MapPin, Menu, MessageSquare, Navigation, Phone, Plus, Search,
+  Settings, ShieldAlert, ShieldCheck, Star, UserRound, Users, UtensilsCrossed, Wallet, X,
 } from 'lucide-react'
 import {
   ALL_LOCALITIES, LOCALITIES, avgRating, enquiryCode, hashSecret, inr, loadDB,
@@ -18,15 +18,21 @@ import {
   verifyListing as apiVerifyListing,
 } from './lib/api'
 import { approxDistanceKm, CITY_CENTRES, type LatLng } from './lib/geo'
+import DashboardSidebar, { type SidebarSection } from './components/DashboardSidebar'
 import './styles.css'
 
 /** Results pagination: 5 listings per page — page 1 is the 5 nearest PGs. */
 const PAGE_SIZE = 5
+/** Saved / favourite PGs, persisted in localStorage. */
+const SAVED_KEY = 'stayhazaribagh_saved_v1'
 
 type View = 'home' | 'bookings' | 'owner' | 'admin'
 type CityFilter = 'Both' | City
 type VerifiedTab = 'All' | 'Verified' | 'Unverified'
 type ApiStatus = 'local' | 'live' | 'offline'
+type OwnerSection = 'dashboard' | 'PGs' | 'Enquiries' | 'Tenants' | 'Rent & Dues' | 'Complaints' | 'reviews' | 'profile'
+type AdminSection = 'dashboard' | 'all' | 'verified' | 'unverified' | 'owners' | 'users' | 'enquiries' | 'reviews' | 'complaints' | 'settings'
+type TenantSection = 'bookings' | 'saved' | 'profile'
 
 function CountUp({ to, suffix = '' }: { to: number; suffix?: string }) {
   const [n, setN] = useState(0)
@@ -73,6 +79,24 @@ export default function App() {
   const [userLoc, setUserLoc] = useState<LatLng | null>(null)
   const [nearestFirst, setNearestFirst] = useState(false)
   const [page, setPage] = useState(1)
+  /** Dashboard left-sidebar sections (per role) + mobile drawer + collapse. */
+  const [ownerSection, setOwnerSection] = useState<OwnerSection>('dashboard')
+  const [adminSection, setAdminSection] = useState<AdminSection>('dashboard')
+  const [tenantSection, setTenantSection] = useState<TenantSection>('bookings')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  /** Saved / favourite PGs — heart on a PG card, listed in the tenant dashboard. */
+  const [savedIds, setSavedIds] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem(SAVED_KEY) ?? '[]') as string[] } catch { return [] }
+  })
+  useEffect(() => { try { localStorage.setItem(SAVED_KEY, JSON.stringify(savedIds)) } catch { /* storage full/blocked */ } }, [savedIds])
+  function toggleSave(id: string) {
+    setSavedIds((prev) => {
+      const on = prev.includes(id)
+      showToast(on ? 'Saved PG se hataya gaya.' : 'PG save ho gaya — My Bookings > Saved PGs me dekho.')
+      return on ? prev.filter((x) => x !== id) : [...prev, id]
+    })
+  }
 
   const apiStatus: ApiStatus = !apiConfigured() ? 'local' : apiListings ? 'live' : apiFailed ? 'offline' : 'local'
   const apiIds = useMemo(() => new Set((apiListings ?? []).map((p) => p.id)), [apiListings])
@@ -201,7 +225,7 @@ export default function App() {
 
   const localitiesForCity = city === 'Both' ? ALL_LOCALITIES : LOCALITIES[city]
 
-  function go(v: View) { setView(v); setSelected(null) }
+  function go(v: View) { setView(v); setSelected(null); setSidebarOpen(false) }
 
   async function handleAuth(mode: 'login' | 'signup', data: { name: string; phone: string; email: string; password: string; role: Role }) {
     const phone = data.phone.replace(/\D/g, '').slice(-10)
@@ -420,6 +444,94 @@ export default function App() {
     go('home')
   }
 
+  /* ---------- Left-sidebar menus (all three dashboards) ---------- */
+  const ownerPropIds = useMemo(() => new Set(
+    sessionUser ? displayProperties.filter((p) => p.ownerPhone === sessionUser.phone || p.ownerId === sessionUser.id).map((p) => p.id) : [],
+  ), [displayProperties, sessionUser])
+  const ownerNewEnquiries = db.enquiries.filter((e) => ownerPropIds.has(e.propertyId) && e.status === 'New').length
+  const ownerOpenComplaints = db.complaints.filter((c) => ownerPropIds.has(c.propertyId) && c.status === 'Open').length
+  const tenantEnquiryCount = sessionUser ? db.enquiries.filter((e) => e.tenantPhone === sessionUser.phone).length : 0
+  const adminUnverified = totalProps - verifiedCount
+  const sidebarProps = {
+    collapsed: sidebarCollapsed,
+    onToggleCollapsed: () => setSidebarCollapsed((c) => !c),
+    drawerOpen: sidebarOpen,
+    onCloseDrawer: () => setSidebarOpen(false),
+  } as const
+
+  const tenantSections: SidebarSection[] = [
+    {
+      heading: 'Dhoondho',
+      items: [
+        { id: 'home', label: 'Home / Search PGs', icon: Home, onClick: () => go('home') },
+        { id: 'bookings', label: 'My Bookings', icon: BookOpen, badge: tenantEnquiryCount, onClick: () => { go('bookings'); setTenantSection('bookings') } },
+        { id: 'saved', label: 'Saved PGs', icon: Heart, badge: savedIds.length, onClick: () => { go('bookings'); setTenantSection('saved') } },
+      ],
+    },
+    {
+      heading: 'Mera Account',
+      items: [
+        { id: 'list', label: 'Apna PG List Karo — FREE', icon: Plus, onClick: () => setListOpen(true) },
+        ...(sessionUser
+          ? [{ id: 'profile', label: 'Profile / My Account', icon: UserRound, onClick: () => { go('bookings'); setTenantSection('profile') } }]
+          : [{ id: 'login', label: 'Login / Sign Up', icon: KeyRound, onClick: () => setAuthOpen({ mode: 'login', portal: 'user' }) }]),
+      ],
+    },
+  ]
+  const ownerSections: SidebarSection[] = [
+    {
+      heading: 'Makan Malik',
+      items: [
+        { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, onClick: () => { go('owner'); setOwnerSection('dashboard') } },
+        { id: 'PGs', label: 'My PGs', icon: Building2, badge: ownerPropIds.size, onClick: () => { go('owner'); setOwnerSection('PGs') } },
+        { id: 'add', label: 'Add New PG', icon: Plus, onClick: () => setListOpen(true) },
+        { id: 'Enquiries', label: 'Enquiries', icon: MessageSquare, badge: ownerNewEnquiries, onClick: () => { go('owner'); setOwnerSection('Enquiries') } },
+      ],
+    },
+    {
+      heading: 'Manage',
+      items: [
+        { id: 'Tenants', label: 'Tenants', icon: Users, onClick: () => { go('owner'); setOwnerSection('Tenants') } },
+        { id: 'Rent & Dues', label: 'Rent & Dues', icon: Wallet, onClick: () => { go('owner'); setOwnerSection('Rent & Dues') } },
+        { id: 'Complaints', label: 'Complaints', icon: ClipboardList, badge: ownerOpenComplaints, onClick: () => { go('owner'); setOwnerSection('Complaints') } },
+        { id: 'reviews', label: 'Reviews', icon: Star, onClick: () => { go('owner'); setOwnerSection('reviews') } },
+      ],
+    },
+    {
+      heading: 'Account',
+      items: [
+        { id: 'profile', label: 'Profile / Settings', icon: Settings, onClick: () => { go('owner'); setOwnerSection('profile') } },
+      ],
+    },
+  ]
+  const adminSections: SidebarSection[] = [
+    {
+      heading: 'Control Room',
+      items: [
+        { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, onClick: () => { go('admin'); setAdminSection('dashboard') } },
+        { id: 'all', label: 'All PGs', icon: Building2, badge: totalProps, onClick: () => { go('admin'); setAdminSection('all') } },
+        { id: 'verified', label: 'Verified PGs', icon: ShieldCheck, badge: verifiedCount, onClick: () => { go('admin'); setAdminSection('verified') } },
+        { id: 'unverified', label: 'Unverified PGs', icon: ShieldAlert, badge: adminUnverified, onClick: () => { go('admin'); setAdminSection('unverified') } },
+      ],
+    },
+    {
+      heading: 'Log',
+      items: [
+        { id: 'owners', label: 'Owners', icon: Users, badge: db.users.filter((u) => u.role === 'owner').length, onClick: () => { go('admin'); setAdminSection('owners') } },
+        { id: 'users', label: 'Users / Tenants', icon: UserRound, badge: db.users.length, onClick: () => { go('admin'); setAdminSection('users') } },
+        { id: 'enquiries', label: 'Enquiries', icon: MessageSquare, badge: db.enquiries.length, onClick: () => { go('admin'); setAdminSection('enquiries') } },
+        { id: 'reviews', label: 'Reviews', icon: Star, badge: db.reviews.length, onClick: () => { go('admin'); setAdminSection('reviews') } },
+        { id: 'complaints', label: 'Complaints', icon: ClipboardList, badge: db.complaints.filter((c) => c.status === 'Open').length, onClick: () => { go('admin'); setAdminSection('complaints') } },
+      ],
+    },
+    {
+      heading: 'System',
+      items: [
+        { id: 'settings', label: 'Settings', icon: Settings, onClick: () => { go('admin'); setAdminSection('settings') } },
+      ],
+    },
+  ]
+
   return (
     <div>
       {/* Trust strip */}
@@ -435,6 +547,11 @@ export default function App() {
       {/* Header */}
       <header className="topbar">
         <div className="container topbar-inner">
+          {view !== 'home' && (
+            <button className="hamburger" onClick={() => setSidebarOpen(true)} aria-label="Dashboard menu kholo">
+              <Menu size={22} />
+            </button>
+          )}
           <a className="brand" href="#" onClick={(e) => { e.preventDefault(); go('home') }} aria-label="StayHazaribagh home">
             <span className="brand-mark"><b>S</b><i><BedDouble size={12} /></i></span>
             <span>
@@ -480,24 +597,68 @@ export default function App() {
             userLoc={userLoc} nearestFirst={nearestFirst} onToggleNearMe={toggleNearMe}
             apiStatus={apiStatus} apiLoading={apiLoading}
             onSelect={setSelected} onList={() => setListOpen(true)} onGo={go}
+            savedIds={savedIds} onToggleSave={toggleSave}
             onClearFilters={() => { setCity('Both'); setLocality('All'); setGender('All'); setMaxRent(8000); setQuery(''); setVerifiedTab('All'); setPage(1) }}
           />
         )}
         {view === 'bookings' && (
-          <BookingsView db={viewDb} sessionUser={sessionUser} code={bookingCode} setCode={setBookingCode}
-            phone={bookingPhone} setPhone={setBookingPhone} onSelect={setSelected} onLogout={logout}
-            onComplaint={(c) => update((d) => { d.complaints.push(c); return d })} showToast={showToast} />
+          <div className={`dash-layout ${sidebarCollapsed ? 'collapsed' : ''}`}>
+            <DashboardSidebar
+              title="My Dashboard" subtitle="PG dhoondho, bookings dekho"
+              userInitial={sessionUser ? (sessionUser.name[0]?.toUpperCase() ?? 'G') : 'G'}
+              userName={sessionUser ? sessionUser.name.split(' ')[0] : 'Guest'}
+              userRole={sessionUser ? (sessionUser.role === 'owner' ? 'Makan Malik' : 'Tenant') : 'Guest — login karo'}
+              sections={tenantSections} activeId={tenantSection} onLogout={sessionUser ? logout : undefined}
+              {...sidebarProps}
+            />
+            <div className="dash-content">
+              <BookingsView db={viewDb} sessionUser={sessionUser} code={bookingCode} setCode={setBookingCode}
+                phone={bookingPhone} setPhone={setBookingPhone} onSelect={setSelected} onLogout={logout}
+                section={tenantSection} setSection={setTenantSection}
+                savedIds={savedIds} savedProps={displayProperties.filter((p) => savedIds.includes(p.id))}
+                onToggleSave={toggleSave} userLoc={userLoc}
+                onComplaint={(c) => update((d) => { d.complaints.push(c); return d })} showToast={showToast} />
+            </div>
+          </div>
         )}
         {view === 'owner' && (
-          <OwnerView db={viewDb} sessionUser={sessionUser} update={update} showToast={showToast}
-            apiIds={apiIds} onApiBeds={handleApiBeds} onApiDelete={handleApiDelete}
-            onAuth={() => setAuthOpen({ mode: 'login', portal: 'owner' })} onList={() => setListOpen(true)} onLogout={logout} />
+          <div className={`dash-layout ${sidebarCollapsed ? 'collapsed' : ''}`}>
+            <DashboardSidebar
+              title="Makan Malik Portal" subtitle="Apne PGs, tenants aur rent"
+              userInitial={sessionUser ? (sessionUser.name[0]?.toUpperCase() ?? 'M') : 'M'}
+              userName={sessionUser ? sessionUser.name.split(' ')[0] : 'Makan Malik'}
+              userRole={sessionUser ? 'Owner' : 'Login karo'}
+              sections={ownerSections} activeId={ownerSection} onLogout={sessionUser ? logout : undefined}
+              {...sidebarProps}
+            />
+            <div className="dash-content">
+              <OwnerView db={viewDb} sessionUser={sessionUser} update={update} showToast={showToast}
+                apiIds={apiIds} onApiBeds={handleApiBeds} onApiDelete={handleApiDelete}
+                section={ownerSection} setSection={setOwnerSection}
+                onAuth={() => setAuthOpen({ mode: 'login', portal: 'owner' })} onList={() => setListOpen(true)} onLogout={logout} />
+            </div>
+          </div>
         )}
         {view === 'admin' && (
-          <AdminView db={viewDb} update={update} showToast={showToast} unlocked={adminUnlocked} setUnlocked={setAdminUnlocked}
-            adminSessionUser={adminSessionUser} onAdminLogout={adminLogout}
-            apiIds={apiIds} onApiVerify={handleApiVerify} onApiDelete={handleApiDelete}
-            onOpenAuth={(portal) => setAuthOpen({ mode: 'login', portal })} />
+          <div className={`dash-layout ${sidebarCollapsed ? 'collapsed' : ''}`}>
+            {adminSessionUser || adminUnlocked ? (
+              <DashboardSidebar
+                title="Super Admin" subtitle="Platform control room"
+                userInitial={adminSessionUser ? (adminSessionUser.username[0]?.toUpperCase() ?? 'A') : 'A'}
+                userName={adminSessionUser ? adminSessionUser.username : 'Super Admin'}
+                userRole="Super Admin"
+                sections={adminSections} activeId={adminSection} onLogout={adminSessionUser ? adminLogout : undefined}
+                {...sidebarProps}
+              />
+            ) : null}
+            <div className="dash-content">
+              <AdminView db={viewDb} update={update} showToast={showToast} unlocked={adminUnlocked} setUnlocked={setAdminUnlocked}
+                adminSessionUser={adminSessionUser} onAdminLogout={adminLogout}
+                apiIds={apiIds} onApiVerify={handleApiVerify} onApiDelete={handleApiDelete}
+                section={adminSection} setSection={setAdminSection}
+                onOpenAuth={(portal) => setAuthOpen({ mode: 'login', portal })} />
+            </div>
+          </div>
         )}
       </main>
 
@@ -606,6 +767,7 @@ function HomeView(props: {
   userLoc: LatLng | null; nearestFirst: boolean; onToggleNearMe: () => void
   apiStatus: ApiStatus; apiLoading: boolean
   onSelect: (p: Property) => void; onList: () => void; onGo: (v: View) => void
+  savedIds: string[]; onToggleSave: (id: string) => void
   onClearFilters: () => void
 }) {
   const { db, filtered } = props
@@ -736,7 +898,7 @@ function HomeView(props: {
         ) : (
           <>
             <div className="grid">
-              {props.pageItems.map((p, i) => <PropertyCard key={p.id} p={p} db={db} index={i} userLoc={props.userLoc} onSelect={props.onSelect} />)}
+              {props.pageItems.map((p, i) => <PropertyCard key={p.id} p={p} db={db} index={i} userLoc={props.userLoc} onSelect={props.onSelect} saved={props.savedIds.includes(p.id)} onToggleSave={props.onToggleSave} />)}
             </div>
             <nav className="pagination" aria-label="PG results pages">
               <p className="page-info">
@@ -807,7 +969,7 @@ function HomeView(props: {
   )
 }
 
-function PropertyCard({ p, db, index, userLoc, onSelect }: { p: Property; db: DB; index: number; userLoc: LatLng | null; onSelect: (p: Property) => void }) {
+function PropertyCard({ p, db, index, userLoc, onSelect, saved, onToggleSave }: { p: Property; db: DB; index: number; userLoc: LatLng | null; onSelect: (p: Property) => void; saved?: boolean; onToggleSave?: (id: string) => void }) {
   const revs = db.reviews.filter((r) => r.propertyId === p.id)
   const { avg, count } = avgRating(revs)
   const occ = occupancy(p)
@@ -820,6 +982,17 @@ function PropertyCard({ p, db, index, userLoc, onSelect }: { p: Property; db: DB
           <div className="cover-locality"><MapPin size={13} /> {p.locality}</div>
         </div>
         <span className="badge badge-live" style={{ position: 'absolute', top: 12, right: 12 }}><span className="pulse" /> {p.availableBeds} beds left</span>
+        {onToggleSave && (
+          <button
+            type="button"
+            className={`save-heart ${saved ? 'saved' : ''}`}
+            aria-label={saved ? 'Saved se hatayo' : 'PG save karo'}
+            aria-pressed={!!saved}
+            onClick={(e) => { e.stopPropagation(); onToggleSave(p.id) }}
+          >
+            <Heart size={18} fill={saved ? '#f59e0b' : 'none'} color={saved ? '#f59e0b' : '#fff'} />
+          </button>
+        )}
       </div>
       <div className="card-body">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
@@ -1212,6 +1385,8 @@ function BookingsView(props: {
   phone: string; setPhone: (s: string) => void; onSelect: (p: Property) => void; onLogout: () => void
   onComplaint: (c: { id: string; propertyId: string; propertyName: string; tenantName: string; tenantPhone: string; text: string; status: 'Open' | 'In Progress' | 'Resolved'; createdAt: string }) => void
   showToast: (m: string) => void
+  section: TenantSection; setSection: (s: TenantSection) => void
+  savedIds: string[]; savedProps: Property[]; onToggleSave: (id: string) => void; userLoc: LatLng | null
 }) {
   const { db, sessionUser } = props
   const [cText, setCText] = useState('')
@@ -1225,12 +1400,52 @@ function BookingsView(props: {
   return (
     <section className="section container">
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        <h2 style={{ margin: 0 }}>My Bookings</h2>
+        <h2 style={{ margin: 0 }}>{props.section === 'saved' ? 'Saved PGs' : props.section === 'profile' ? 'Profile / My Account' : 'My Bookings'}</h2>
         {sessionUser && (
           <button className="btn btn-danger btn-sm logout-pill" onClick={props.onLogout} aria-label="Log out"><LogOut size={15} /> Logout</button>
         )}
       </div>
-      <p className="muted">Apni enquiries ka status dekho — login karke, ya enquiry time mile private code se.</p>
+      <p className="muted">{props.section === 'saved'
+        ? 'Heart dabake save kiye hue PG — yahan se seedha details kholo ya enquiry bhejo.'
+        : props.section === 'profile'
+          ? 'Aapka account — naam, WhatsApp number aur role.'
+          : 'Apni enquiries ka status dekho — login karke, ya enquiry time mile private code se.'}</p>
+      {props.section === 'saved' && (
+        <>
+          {props.savedProps.length === 0 && (
+            <div className="empty"><Heart size={40} color="#0f4c4c" /><h3>Abhi koi PG save nahi hai</h3><p className="muted">Home par kisi PG card ke heart par tap karo — saved PG yahan dikhega.</p></div>
+          )}
+          <div className="grid">
+            {props.savedProps.map((p, i) => <PropertyCard key={p.id} p={p} db={db} index={i} userLoc={props.userLoc} onSelect={props.onSelect} saved={props.savedIds.includes(p.id)} onToggleSave={props.onToggleSave} />)}
+          </div>
+        </>
+      )}
+      {props.section === 'profile' && (
+        <div className="panel">
+          {sessionUser ? (
+            <>
+              <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+                <span className="avatar" style={{ width: 56, height: 56, fontSize: 24 }}>{sessionUser.name[0]?.toUpperCase()}</span>
+                <div><b style={{ fontSize: 20 }}>{sessionUser.name}</b><br /><span className="muted small">{sessionUser.role === 'owner' ? 'Makan Malik' : 'Tenant'} • {sessionUser.phone}</span></div>
+              </div>
+              <table className="table" style={{ marginTop: 16 }}>
+                <tbody>
+                  <tr><td><b>Naam</b></td><td>{sessionUser.name}</td></tr>
+                  <tr><td><b>WhatsApp number</b></td><td>{sessionUser.phone}</td></tr>
+                  <tr><td><b>Email</b></td><td>{sessionUser.email || 'Not listed'}</td></tr>
+                  <tr><td><b>Role</b></td><td>{sessionUser.role === 'owner' ? 'Makan Malik (Owner)' : 'Tenant (User)'}</td></tr>
+                  <tr><td><b>Account bana</b></td><td>{timeAgo(sessionUser.createdAt)}</td></tr>
+                </tbody>
+              </table>
+              <button className="btn btn-danger logout-pill" style={{ marginTop: 12 }} onClick={props.onLogout}><LogOut size={15} /> Logout</button>
+            </>
+          ) : (
+            <div className="empty"><p>Profile dekhne ke liye pehle login karo.</p></div>
+          )}
+        </div>
+      )}
+      {props.section === 'bookings' && (
+      <>
       {lookedUp && (
         <div className="stat-tiles">
           <div className="tile"><b>{myEnquiries.length}</b><span>Total enquiries</span></div>
@@ -1285,6 +1500,8 @@ function BookingsView(props: {
           <div className="review" key={c.id}><b>{c.propertyName}</b> — <span className="badge badge-verified">{c.status}</span><p style={{ margin: '6px 0 0' }}>{c.text}</p></div>
         ))}
       </div>
+      </>
+      )}
     </section>
   )
 }
@@ -1294,10 +1511,11 @@ function OwnerView(props: {
   db: DB; sessionUser: User | null; update: (fn: (d: DB) => DB) => void; showToast: (m: string) => void
   apiIds: Set<string>; onApiBeds: (id: string, availableBeds: number) => Promise<boolean>
   onApiDelete: (id: string) => Promise<boolean>
+  section: OwnerSection; setSection: (s: OwnerSection) => void
   onAuth: () => void; onList: () => void; onLogout: () => void
 }) {
   const { db, sessionUser } = props
-  const [tab, setTab] = useState<'PGs' | 'Enquiries' | 'Tenants' | 'Rent & Dues' | 'Complaints'>('PGs')
+  const tab = props.section
   const [pin, setPin] = useState('')
   const [newPin, setNewPin] = useState('')
   const [pinOk, setPinOk] = useState(false)
@@ -1311,6 +1529,8 @@ function OwnerView(props: {
   const myEnquiries = db.enquiries.filter((e) => myIds.includes(e.propertyId))
   const myTenants = db.tenants.filter((t) => myIds.includes(t.propertyId))
   const myComplaints = db.complaints.filter((c) => myIds.includes(c.propertyId))
+  const myReviews = db.reviews.filter((r) => myIds.includes(r.propertyId))
+  const myAvg = myReviews.length ? (myReviews.reduce((s, r) => s + r.stars, 0) / myReviews.length).toFixed(1) : '—'
   const totalBeds = myProps.reduce((s, p) => s + p.totalBeds, 0)
   const availBeds = myProps.reduce((s, p) => s + p.availableBeds, 0)
   const dues = myTenants.reduce((s, t) => s + (t.rentPaid ? 0 : t.dueAmount), 0)
@@ -1377,9 +1597,6 @@ function OwnerView(props: {
   return (
     <section className="section container">
       <h2>Namaste, {sessionUser.name} ji — Makan Malik Portal</h2>
-      <div className="owner-logout-row">
-        <button className="btn btn-danger logout-pill logout-full" onClick={props.onLogout} aria-label="Log out"><LogOut size={15} /> Logout</button>
-      </div>
       <p className="muted">Sirf aapke PGs — {myProps.length} PG • {totalBeds} beds • {availBeds} khali</p>
 
       {!sessionUser.pinHash ? (
@@ -1402,18 +1619,41 @@ function OwnerView(props: {
       ) : null}
       {pinOk && <p className="small" style={{ color: '#0e7a5f' }}><Check size={14} /> Portal unlocked — PIN verified.</p>}
 
-      <div className="stat-tiles">
-        <div className="tile"><b><CountUp to={myProps.length} /></b><span>Mere PGs</span></div>
-        <div className="tile"><b>{occPct}%</b><span>Occupancy</span><div className="occ"><i style={{ width: `${occPct}%` }} /></div></div>
-        <div className="tile"><b>{availBeds}</b><span>Khali beds</span></div>
-        <div className="tile"><b>{inr(dues)}</b><span>Pending dues</span></div>
-      </div>
-
-      <div className="tabs" role="tablist">
-        {(['PGs', 'Enquiries', 'Tenants', 'Rent & Dues', 'Complaints'] as const).map((t) => (
-          <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t}{t === 'Enquiries' ? ` (${myEnquiries.filter((e) => e.status === 'New').length} new)` : ''}</button>
-        ))}
-      </div>
+      {tab === 'dashboard' && (
+        <>
+          <div className="stat-tiles">
+            <div className="tile"><b><CountUp to={myProps.length} /></b><span>Mere PGs</span></div>
+            <div className="tile"><b>{occPct}%</b><span>Occupancy</span><div className="occ"><i style={{ width: `${occPct}%` }} /></div></div>
+            <div className="tile"><b>{availBeds}</b><span>Khali beds</span></div>
+            <div className="tile"><b>{inr(dues)}</b><span>Pending dues</span></div>
+          </div>
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>Aaj kya karein?</h3>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn btn-orange" onClick={props.onList}><Plus size={18} /> Naya PG List Karo — FREE</button>
+              <button className="btn btn-ghost" onClick={() => props.setSection('Enquiries')}><MessageSquare size={16} /> Enquiries ({myEnquiries.filter((e) => e.status === 'New').length} new)</button>
+              <button className="btn btn-ghost" onClick={() => props.setSection('Rent & Dues')}><Wallet size={16} /> Rent &amp; Dues — {inr(dues)} pending</button>
+              <button className="btn btn-ghost" onClick={() => props.setSection('Complaints')}><ClipboardList size={16} /> Complaints ({myComplaints.filter((c) => c.status === 'Open').length} open)</button>
+            </div>
+          </div>
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>Latest enquiries</h3>
+            {myEnquiries.length === 0 && <p className="muted">Abhi koi enquiry nahi aayi. Apna PG share karo — WhatsApp groups, coaching ke bahar poster, VBU ke paas.</p>}
+            {myEnquiries.slice(0, 3).map((e) => (
+              <div className="review" key={e.id}><b>{e.tenantName}</b> <span className="muted">({e.tenantPhone})</span> — {e.propertyName} <span className="badge badge-verified">{e.status}</span></div>
+            ))}
+            {myEnquiries.length > 0 && <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => props.setSection('Enquiries')}>Saari enquiries dekho</button>}
+          </div>
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>Reviews — {myAvg} ★ ({myReviews.length})</h3>
+            {myReviews.length === 0 && <p className="muted">Abhi aapke PGs par koi review nahi hai.</p>}
+            {myReviews.slice(0, 3).map((r) => (
+              <div className="review" key={r.id}><b>{r.author}</b> — <Star size={13} color="#f59e0b" fill="#f59e0b" /> {r.stars}<p style={{ margin: '6px 0 0' }}>{r.comment}</p></div>
+            ))}
+            {myReviews.length > 0 && <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => props.setSection('reviews')}>Saare reviews dekho</button>}
+          </div>
+        </>
+      )}
 
       {tab === 'PGs' && (
         <>
@@ -1523,6 +1763,50 @@ function OwnerView(props: {
           ))}
         </div>
       )}
+
+      {tab === 'reviews' && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}><Star size={18} /> Mere PGs ke reviews — {myAvg} ★ ({myReviews.length})</h3>
+          {myReviews.length === 0 && <p className="muted">Abhi aapke PGs par koi review nahi hai. Tenant site par review likhte hain — achha service do, review apne aap aayega.</p>}
+          {myReviews.map((r) => {
+            const p = myProps.find((x) => x.id === r.propertyId)
+            return (
+              <div className="review" key={r.id}>
+                <b>{r.author}</b> — {p?.name ?? 'PG'} — <Star size={13} color="#f59e0b" fill="#f59e0b" /> {r.stars}
+                <p style={{ margin: '6px 0 0' }}>{r.comment}</p>
+                <span className="small muted">{timeAgo(r.createdAt)}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {tab === 'profile' && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>Profile / Settings</h3>
+          <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+            <span className="avatar" style={{ width: 56, height: 56, fontSize: 24 }}>{sessionUser.name[0]?.toUpperCase()}</span>
+            <div><b style={{ fontSize: 20 }}>{sessionUser.name}</b><br /><span className="muted small">Makan Malik • {sessionUser.phone}</span></div>
+          </div>
+          <table className="table" style={{ marginTop: 16 }}>
+            <tbody>
+              <tr><td><b>Naam</b></td><td>{sessionUser.name}</td></tr>
+              <tr><td><b>WhatsApp number</b></td><td>{sessionUser.phone}</td></tr>
+              <tr><td><b>Email</b></td><td>{sessionUser.email || 'Not listed'}</td></tr>
+              <tr><td><b>Mere PGs</b></td><td>{myProps.length} PG • {totalBeds} beds • {availBeds} khali</td></tr>
+              <tr><td><b>Portal PIN</b></td><td>{sessionUser.pinHash ? 'Set hai ✓' : 'Abhi set nahi hai'}</td></tr>
+              <tr><td><b>Account bana</b></td><td>{timeAgo(sessionUser.createdAt)}</td></tr>
+            </tbody>
+          </table>
+          <h4>Portal PIN badlo</h4>
+          <p className="small muted">4-digit PIN — bina password ke bhi portal kholne ke liye. PIN hashed save hota hai.</p>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <input value={newPin} onChange={(e) => setNewPin(e.target.value)} placeholder="Naya 4-digit PIN" maxLength={4} inputMode="numeric" style={{ maxWidth: 180 }} />
+            <button className="btn" onClick={setPinNow}>PIN Set / Badlo</button>
+          </div>
+          <button className="btn btn-danger logout-pill" style={{ marginTop: 16 }} onClick={props.onLogout}><LogOut size={15} /> Logout</button>
+        </div>
+      )}
     </section>
   )
 }
@@ -1535,6 +1819,7 @@ function AdminView(props: {
   onAdminLogout: () => void
   apiIds: Set<string>; onApiVerify: (id: string, verified: boolean) => Promise<boolean>
   onApiDelete: (id: string) => Promise<boolean>
+  section: AdminSection; setSection: (s: AdminSection) => void
   onOpenAuth: (portal: 'user' | 'owner' | 'admin') => void
 }) {
   const { db } = props
@@ -1549,7 +1834,39 @@ function AdminView(props: {
   const hzb = db.properties.filter((p) => p.city === 'Hazaribagh')
   const rnc = db.properties.filter((p) => p.city === 'Ranchi')
   const owners = db.users.filter((u) => u.role === 'owner')
+  const tenants = db.users.filter((u) => u.role === 'tenant')
   const isAdminIn = !!props.adminSessionUser || props.unlocked
+  const verifiedList = db.properties.filter((p) => p.verified)
+  const unverifiedList = db.properties.filter((p) => !p.verified)
+
+  /** One listing row with Verify / Delete — reused by All / Verified / Unverified sections. */
+  function listingRow(p: Property) {
+    return (
+      <div className="review" key={p.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.name}</b> — {p.locality}, {p.city} • {inr(p.rent)} • {p.availableBeds}/{p.totalBeds} beds<br />
+          <span className="muted small">Owner: {p.ownerPhone} • {timeAgo(p.createdAt)}</span></div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-sm" onClick={async () => {
+            if (props.apiIds.has(p.id)) {
+              await props.onApiVerify(p.id, !p.verified)
+              return
+            }
+            props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) x.verified = !x.verified; return d })
+          }}>
+            {p.verified ? 'Unverify Karo' : 'Verify Karo ✓'}
+          </button>
+          <button className="btn btn-danger btn-sm" onClick={async () => {
+            if (!confirm(`"${p.name}" delete karna hai?`)) return
+            if (props.apiIds.has(p.id)) {
+              await props.onApiDelete(p.id)
+              return
+            }
+            props.update((d) => { d.properties = d.properties.filter((y) => y.id !== p.id); return d })
+          }}>Delete</button>
+        </div>
+      </div>
+    )
+  }
 
   async function setupAdminAccount() {
     if (db.adminAccount) return props.showToast('Super Admin account pehle se set hai — login karo')
@@ -1686,67 +2003,158 @@ function AdminView(props: {
           )}
         </div>
         <p className="muted" style={{ color: '#9fc4bb' }}>Platform ki poori jaankari ek jagah. Listing verify/delete, owners aur PIN — sab yahin se.</p>
-        <div className="stat-tiles">
-          <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.properties.length}</b><span>Total PGs</span></div>
-          <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.properties.filter((p) => p.verified).length}</b><span>Verified</span></div>
-          <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.users.length}</b><span>Users ({owners.length} owners)</span></div>
-          <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.enquiries.length}</b><span>Enquiries</span></div>
-        </div>
-        <div className="panel">
-          <h3 style={{ marginTop: 0 }}>Hazaribagh vs Ranchi</h3>
-          <p>Hazaribagh: <b>{hzb.length}</b> PGs • Ranchi: <b>{rnc.length}</b> PGs</p>
-          <div className="occ"><i style={{ width: `${db.properties.length ? (hzb.length / db.properties.length) * 100 : 0}%` }} /></div>
-          <p className="small muted">Hazaribagh share — {db.properties.length ? Math.round((hzb.length / db.properties.length) * 100) : 0}%</p>
-        </div>
 
-        <div className="panel">
-          <h3 style={{ marginTop: 0 }}>Listings — Verify / Delete</h3>
-          {db.properties.length === 0 && <p className="muted">Abhi koi listing nahi hai. Pehla owner List PG karega, tab yahan aayega.</p>}
-          {db.properties.map((p) => (
-            <div className="review" key={p.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-              <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.name}</b> — {p.locality}, {p.city} • {inr(p.rent)} • {p.availableBeds}/{p.totalBeds} beds<br />
-                <span className="muted small">Owner: {p.ownerPhone} • {timeAgo(p.createdAt)}</span></div>
+        {props.section === 'dashboard' && (
+          <>
+            <div className="stat-tiles">
+              <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.properties.length}</b><span>Total PGs</span></div>
+              <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.properties.filter((p) => p.verified).length}</b><span>Verified</span></div>
+              <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.users.length}</b><span>Users ({owners.length} owners)</span></div>
+              <div className="tile" style={{ background: '#123232', borderColor: '#1e4a4a', color: '#e6f4f0' }}><b>{db.enquiries.length}</b><span>Enquiries</span></div>
+            </div>
+            <div className="panel">
+              <h3 style={{ marginTop: 0 }}>Hazaribagh vs Ranchi</h3>
+              <p>Hazaribagh: <b>{hzb.length}</b> PGs • Ranchi: <b>{rnc.length}</b> PGs</p>
+              <div className="occ"><i style={{ width: `${db.properties.length ? (hzb.length / db.properties.length) * 100 : 0}%` }} /></div>
+              <p className="small muted">Hazaribagh share — {db.properties.length ? Math.round((hzb.length / db.properties.length) * 100) : 0}%</p>
+            </div>
+            <div className="panel">
+              <h3 style={{ marginTop: 0 }}>Aaj kya karein?</h3>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button className="btn btn-sm" onClick={async () => {
-                  if (props.apiIds.has(p.id)) {
-                    await props.onApiVerify(p.id, !p.verified)
-                    return
-                  }
-                  props.update((d) => { const x = d.properties.find((y) => y.id === p.id); if (x) x.verified = !x.verified; return d })
-                }}>
-                  {p.verified ? 'Unverify Karo' : 'Verify Karo ✓'}
-                </button>
-                <button className="btn btn-danger btn-sm" onClick={async () => {
-                  if (!confirm(`"${p.name}" delete karna hai?`)) return
-                  if (props.apiIds.has(p.id)) {
-                    await props.onApiDelete(p.id)
-                    return
-                  }
-                  props.update((d) => { d.properties = d.properties.filter((y) => y.id !== p.id); return d })
-                }}>Delete</button>
+                <button className="btn btn-orange" onClick={() => props.setSection('unverified')}><ShieldAlert size={16} /> Verify Queue — {unverifiedList.length} pending</button>
+                <button className="btn btn-ghost" onClick={() => props.setSection('owners')}><Users size={16} /> Owners ({owners.length})</button>
+                <button className="btn btn-ghost" onClick={() => props.setSection('enquiries')}><MessageSquare size={16} /> Enquiries ({db.enquiries.length})</button>
+                <button className="btn btn-ghost" onClick={() => props.setSection('complaints')}><ClipboardList size={16} /> Complaints ({db.complaints.filter((c) => c.status === 'Open').length} open)</button>
               </div>
             </div>
-          ))}
-        </div>
+          </>
+        )}
 
-        <div className="panel">
-          <h3 style={{ marginTop: 0 }}>Owners Directory</h3>
-          {owners.length === 0 && <p className="muted">Abhi koi owner account nahi hai.</p>}
-          <div className="table-wrap">
-          <table className="table">
-            <thead><tr><th>Owner</th><th>Phone</th><th>PGs</th><th>PIN</th></tr></thead>
-            <tbody>{owners.map((o) => (
-              <tr key={o.id}><td>{o.name}</td><td>{o.phone}</td><td>{db.properties.filter((p) => p.ownerPhone === o.phone).length}</td><td>{o.pinHash ? 'Set hai' : 'Nahi set'}</td></tr>
-            ))}</tbody>
-          </table>
+        {(props.section === 'all' || props.section === 'verified' || props.section === 'unverified') && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>
+              {props.section === 'all' ? 'All PGs — Verify / Delete'
+                : props.section === 'verified' ? `Verified PGs (${verifiedList.length})`
+                : `Unverified PGs — Verify Queue (${unverifiedList.length})`}
+            </h3>
+            {props.section === 'unverified' && <p className="muted small">Ye listings public Google Maps / OLX se aayi hain ya owner ne list ki hain — jaanch karke Verify Karo dabao, tabhi Verified badge lagega.</p>}
+            {props.section === 'all' && db.properties.length === 0 && <p className="muted">Abhi koi listing nahi hai. Pehla owner List PG karega, tab yahan aayega.</p>}
+            {props.section === 'verified' && verifiedList.length === 0 && <p className="muted">Abhi koi Verified PG nahi hai — Unverified tab se verify karo.</p>}
+            {props.section === 'unverified' && unverifiedList.length === 0 && <p className="muted">Saare PG verified hain — koi pending nahi hai. 🎉</p>}
+            {(props.section === 'all' ? db.properties : props.section === 'verified' ? verifiedList : unverifiedList).map((p) => listingRow(p))}
           </div>
-          <h4>Owner PIN set / reset karo</h4>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <input value={pinOwnerPhone} onChange={(e) => setPinOwnerPhone(e.target.value)} placeholder="Owner WhatsApp number" style={{ maxWidth: 220 }} inputMode="tel" />
-            <input value={newOwnerPin} onChange={(e) => setNewOwnerPin(e.target.value)} placeholder="Naya 4-digit PIN" maxLength={4} style={{ maxWidth: 160 }} inputMode="numeric" />
-            <button className="btn" onClick={setOwnerPin}>PIN Set / Reset</button>
+        )}
+
+        {props.section === 'owners' && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>Owners Directory</h3>
+            {owners.length === 0 && <p className="muted">Abhi koi owner account nahi hai.</p>}
+            <div className="table-wrap">
+            <table className="table">
+              <thead><tr><th>Owner</th><th>Phone</th><th>PGs</th><th>PIN</th></tr></thead>
+              <tbody>{owners.map((o) => (
+                <tr key={o.id}><td>{o.name}</td><td>{o.phone}</td><td>{db.properties.filter((p) => p.ownerPhone === o.phone).length}</td><td>{o.pinHash ? 'Set hai' : 'Nahi set'}</td></tr>
+              ))}</tbody>
+            </table>
+            </div>
+            <h4>Owner PIN set / reset karo</h4>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <input value={pinOwnerPhone} onChange={(e) => setPinOwnerPhone(e.target.value)} placeholder="Owner WhatsApp number" style={{ maxWidth: 220 }} inputMode="tel" />
+              <input value={newOwnerPin} onChange={(e) => setNewOwnerPin(e.target.value)} placeholder="Naya 4-digit PIN" maxLength={4} style={{ maxWidth: 160 }} inputMode="numeric" />
+              <button className="btn" onClick={setOwnerPin}>PIN Set / Reset</button>
+            </div>
           </div>
-        </div>
+        )}
+
+        {props.section === 'users' && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>Users / Tenants ({db.users.length})</h3>
+            {db.users.length === 0 && <p className="muted">Abhi koi user account nahi hai.</p>}
+            <div className="table-wrap">
+            <table className="table">
+              <thead><tr><th>Name</th><th>Phone</th><th>Role</th><th>PGs / Enquiries</th></tr></thead>
+              <tbody>{db.users.map((u) => (
+                <tr key={u.id}>
+                  <td>{u.name}</td><td>{u.phone}</td><td>{u.role === 'owner' ? 'Makan Malik' : 'Tenant'}</td>
+                  <td>{u.role === 'owner'
+                    ? `${db.properties.filter((p) => p.ownerPhone === u.phone).length} PGs`
+                    : `${db.enquiries.filter((e) => e.tenantPhone === u.phone).length} enquiries`}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+            </div>
+            <p className="small muted">Tenants: {tenants.length} • Owners: {owners.length}</p>
+          </div>
+        )}
+
+        {props.section === 'enquiries' && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>Saari Enquiries ({db.enquiries.length})</h3>
+            {db.enquiries.length === 0 && <p className="muted">Abhi koi enquiry nahi aayi.</p>}
+            {db.enquiries.map((e) => (
+              <div className="review" key={e.id}>
+                <b>{e.tenantName}</b> <span className="muted">({e.tenantPhone})</span> — {e.propertyName}
+                <p style={{ margin: '6px 0' }}>{e.message}</p>
+                <span className="badge badge-verified">{e.status}</span> <span className="small muted">Code: {e.code} • {timeAgo(e.createdAt)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {props.section === 'reviews' && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>Saare Reviews ({db.reviews.length})</h3>
+            {db.reviews.length === 0 && <p className="muted">Abhi koi review nahi likha gaya.</p>}
+            {db.reviews.map((r) => {
+              const p = db.properties.find((x) => x.id === r.propertyId)
+              return (
+                <div className="review" key={r.id}>
+                  <b>{r.author}</b> — {p?.name ?? 'PG'} — <Star size={13} color="#f59e0b" fill="#f59e0b" /> {r.stars}
+                  <p style={{ margin: '6px 0 0' }}>{r.comment}</p>
+                  <span className="small muted">{timeAgo(r.createdAt)}</span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {props.section === 'complaints' && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>Saari Complaints ({db.complaints.length})</h3>
+            {db.complaints.length === 0 && <p className="muted">Koi complaint nahi hai.</p>}
+            {db.complaints.map((c) => (
+              <div className="review" key={c.id}>
+                <b>{c.tenantName}</b> <span className="muted">({c.tenantPhone})</span> — {c.propertyName}
+                <p style={{ margin: '6px 0' }}>{c.text}</p>
+                <span className="badge badge-verified">{c.status}</span> <span className="small muted">{timeAgo(c.createdAt)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {props.section === 'settings' && (
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>Settings</h3>
+            <table className="table">
+              <tbody>
+                <tr><td><b>Super Admin ID</b></td><td>{db.adminAccount?.username ?? 'Set nahi hai'}</td></tr>
+                <tr><td><b>Account bana</b></td><td>{db.adminAccount ? timeAgo(db.adminAccount.createdAt) : '—'}</td></tr>
+                <tr><td><b>Staff passcode</b></td><td>{db.settings.adminPasscodeHash ? 'Set hai' : 'Set nahi hai'}</td></tr>
+                <tr><td><b>Session</b></td><td>{props.adminSessionUser ? `Logged in — ${props.adminSessionUser.username}` : 'Passcode se unlocked'}</td></tr>
+              </tbody>
+            </table>
+            <h4>Staff passcode set / badlo</h4>
+            <p className="small muted">Staff passcode Super Admin login ka fallback hai — kam se kam 4 character.</p>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <input type="password" value={newPass} onChange={(e) => setNewPass(e.target.value)} placeholder="Naya staff passcode" style={{ maxWidth: 240 }} />
+              <button className="btn" onClick={setPasscode}>Set Karo</button>
+            </div>
+            {props.adminSessionUser && (
+              <button className="btn btn-danger logout-pill" style={{ marginTop: 16 }} onClick={props.onAdminLogout}><LogOut size={15} /> Logout</button>
+            )}
+            <p className="small muted" style={{ marginTop: 14 }}>Super Admin ID + password sirf ek baar banaya jata hai (pehli baar setup karte time) — use badalne ke liye database se account reset karna padega. Password kabhi plain text me save nahi hota.</p>
+          </div>
+        )}
         <p className="small muted">Note: Ye demo localStorage par chalta hai — data isi browser/device me save hota hai. Production me iski jagah server database hoga.</p>
       </div>
     </section>
