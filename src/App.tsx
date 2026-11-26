@@ -233,6 +233,15 @@ export default function App() {
   // home page lands on the dashboard itself, not scrolled halfway down it.
   function go(v: View) { setView(v); setSelected(null); setSidebarOpen(false); window.scrollTo(0, 0) }
 
+  /** Logged-in user wapas apne dashboard par — role ke hisaab se (landing
+      page se wapas jaane ka rasta; header chip, Dashboard button aur
+      welcome strip sab yahi use karte hain). */
+  function goToDashboard() {
+    if (adminSessionUser) { setAdminSection('dashboard'); go('admin') }
+    else if (sessionUser?.role === 'owner') { setOwnerSection('dashboard'); go('owner') }
+    else if (sessionUser) { setTenantSection('bookings'); go('bookings') }
+  }
+
   async function handleAuth(mode: 'login' | 'signup', data: { name: string; phone: string; email: string; password: string; role: Role }) {
     const phone = data.phone.replace(/\D/g, '').slice(-10)
     if (phone.length !== 10) return showToast('Sahi 10-digit WhatsApp number daalein')
@@ -576,15 +585,21 @@ export default function App() {
             <button className="btn btn-orange" onClick={() => setListOpen(true)}><Plus size={18} /> List PG FREE</button>
             {adminSessionUser && (
               <span className="account-chip admin-chip" title="Super Admin logged in">
-                <span className="avatar" style={{ background: '#b45309' }}><Crown size={15} /></span>
-                <span className="account-name">Admin: {adminSessionUser.username}</span>
+                <button className="account-chip-btn" onClick={goToDashboard} aria-label="Super Admin console kholo" title="Dashboard kholo">
+                  <span className="avatar" style={{ background: '#b45309' }}><Crown size={15} /></span>
+                  <span className="account-name">Admin: {adminSessionUser.username}</span>
+                </button>
+                <button className="btn btn-ghost btn-sm dashboard-btn" onClick={goToDashboard} aria-label="Dashboard kholo"><LayoutDashboard size={15} /> <span className="dashboard-text">Dashboard</span></button>
                 <button className="btn btn-danger btn-sm logout-pill" onClick={adminLogout} aria-label="Super Admin log out"><LogOut size={15} /> <span className="logout-text">Logout</span></button>
               </span>
             )}
             {sessionUser ? (
               <span className="account-chip">
-                <span className="avatar">{sessionUser.name[0]?.toUpperCase()}</span>
-                <span className="account-name">{sessionUser.name.split(' ')[0]}</span>
+                <button className="account-chip-btn" onClick={goToDashboard} aria-label="Apna dashboard kholo" title="Dashboard kholo">
+                  <span className="avatar">{sessionUser.name[0]?.toUpperCase()}</span>
+                  <span className="account-name">{sessionUser.name.split(' ')[0]}</span>
+                </button>
+                <button className="btn btn-ghost btn-sm dashboard-btn" onClick={goToDashboard} aria-label="Dashboard kholo"><LayoutDashboard size={15} /> <span className="dashboard-text">Dashboard</span></button>
                 <button className="btn btn-danger btn-sm logout-pill" onClick={logout} aria-label="Log out"><LogOut size={15} /> <span className="logout-text">Logout</span></button>
               </span>
             ) : (
@@ -612,6 +627,9 @@ export default function App() {
             onSelect={setSelected} onList={() => setListOpen(true)} onGo={go}
             savedIds={savedIds} onToggleSave={toggleSave}
             onClearFilters={() => { setCity('Both'); setLocality('All'); setGender('All'); setMaxRent(8000); setQuery(''); setVerifiedTab('All'); setPage(1) }}
+            sessionUserName={adminSessionUser ? adminSessionUser.username : sessionUser ? sessionUser.name.split(' ')[0] : null}
+            dashboardLabel={adminSessionUser ? 'Admin Console' : 'My Dashboard'}
+            onGoDashboard={goToDashboard}
           />
         )}
         {view === 'bookings' && (
@@ -784,6 +802,8 @@ function HomeView(props: {
   onSelect: (p: Property) => void; onList: () => void; onGo: (v: View) => void
   savedIds: string[]; onToggleSave: (id: string) => void
   onClearFilters: () => void
+  /** Logged-in user ke liye landing page se dashboard wapas jaane ka rasta. */
+  sessionUserName: string | null; dashboardLabel: string; onGoDashboard: () => void
 }) {
   const { db, filtered } = props
   const unverifiedCount = props.totalProps - props.verifiedCount
@@ -809,6 +829,12 @@ function HomeView(props: {
     <>
       <section className="hero">
         <div className="container hero-inner">
+          {props.sessionUserName && (
+            <div className="welcome-strip">
+              <span>Welcome back, <b>{props.sessionUserName}</b> — apna dashboard kholo</span>
+              <button className="btn btn-orange" onClick={props.onGoDashboard}><LayoutDashboard size={16} /> {props.dashboardLabel}</button>
+            </div>
+          )}
           <span className="pill-badge"><MapPin size={14} /> Hazaribagh • Ranchi — Jharkhand</span>
           <h1>Hazaribagh me apna <mark>PG dhoondho</mark>, bina brokerage ke.</h1>
           <p>Matwari, Korrah, Babugaon, Near VBU, Lalpur, Bariatu — live bed availability dekho, owner se seedha baat karo, aur visit book karo. Makan malik ke liye listing bilkul FREE hai.</p>
