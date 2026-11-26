@@ -146,10 +146,22 @@ label{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}
 .faq-chev{flex-shrink:0;color:var(--muted);transition:transform .2s ease}
 .faq.open .faq-chev{transform:rotate(180deg)}
 .faq-a{display:block;margin-top:2px;line-height:1.55}
+/* ---------- footer: always visible on every view, clear & attractive ---------- */
 footer{background:var(--teal-deep);color:#cfe8e2;margin-top:20px}
-footer .container{padding:36px 18px calc(110px + env(safe-area-inset-bottom))}
+footer::before{content:"";display:block;height:4px;background:linear-gradient(90deg,var(--teal-2),var(--orange),var(--teal-2))}
+footer .container{padding:40px 18px calc(110px + env(safe-area-inset-bottom))}
 footer a{color:#fbbf24}
-footer h3{color:#fff}
+.footer-grid{display:grid;grid-template-columns:1.5fr 1fr 1fr 1.3fr;gap:32px}
+.footer-brand img{width:52px;height:52px;border-radius:14px;object-fit:cover;display:block;box-shadow:var(--shadow-sm)}
+.footer-brand b{display:block;font-family:Fraunces,serif;font-size:22px;color:#fff;margin-top:12px}
+.footer-brand b em{font-style:normal;color:var(--orange-2)}
+.footer-brand p{margin:8px 0 0;font-size:13.5px;line-height:1.55;color:#bcdcd4}
+.footer-col h4{color:#fff;margin:2px 0 14px;font-size:15px;letter-spacing:.02em}
+.footer-col button{display:flex;align-items:center;gap:8px;width:100%;background:none;border:0;padding:7px 0;color:#cfe8e2;font-weight:600;font-size:14.5px;text-align:left}
+.footer-col button:hover{color:#fff}
+.footer-col .small{margin:2px 0 12px;color:#9fc4bb;line-height:1.6}
+.footer-bottom{border-top:1px solid rgba(255,255,255,.16);margin-top:32px;padding-top:18px;display:flex;justify-content:space-between;gap:10px 24px;flex-wrap:wrap;font-size:13px;color:#9fc4bb}
+@media(max-width:767px){.footer-grid{grid-template-columns:1fr;gap:26px}}
 .popular{display:flex;flex-wrap:wrap;gap:8px}
 .popular a{color:#cfe8e2;text-decoration:none;border:1px solid rgba(255,255,255,.25);padding:7px 12px;border-radius:999px;font-size:13px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:86px;z-index:100;background:var(--teal-deep);color:#fff;padding:12px 18px;border-radius:999px;font-weight:600;box-shadow:var(--shadow);max-width:92vw;text-align:center}

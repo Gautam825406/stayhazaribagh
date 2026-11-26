@@ -83,6 +83,10 @@ export default function App() {
   const [ownerSection, setOwnerSection] = useState<OwnerSection>('dashboard')
   const [adminSection, setAdminSection] = useState<AdminSection>('dashboard')
   const [tenantSection, setTenantSection] = useState<TenantSection>('bookings')
+  // True only right after a fresh password login/signup as owner — the portal
+  // then opens straight away without asking for the Portal PIN again. A
+  // session restored from localStorage (page reload) still needs the PIN.
+  const [ownerPinUnlocked, setOwnerPinUnlocked] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   /** Saved / favourite PGs — heart on a PG card, listed in the tenant dashboard. */
@@ -225,7 +229,9 @@ export default function App() {
 
   const localitiesForCity = city === 'Both' ? ALL_LOCALITIES : LOCALITIES[city]
 
-  function go(v: View) { setView(v); setSelected(null); setSidebarOpen(false) }
+  // View change always starts at the top — so a login from deep down the
+  // home page lands on the dashboard itself, not scrolled halfway down it.
+  function go(v: View) { setView(v); setSelected(null); setSidebarOpen(false); window.scrollTo(0, 0) }
 
   async function handleAuth(mode: 'login' | 'signup', data: { name: string; phone: string; email: string; password: string; role: Role }) {
     const phone = data.phone.replace(/\D/g, '').slice(-10)
@@ -272,7 +278,9 @@ export default function App() {
         })
         setAuthOpen(null)
         showToast(mode === 'signup' ? `Welcome, ${apiUser.name}! Account ban gaya — 30 din tak login rahega.` : `Welcome back, ${apiUser.name}!`)
-        go(apiUser.role === 'owner' ? 'owner' : 'bookings')
+        // Login/signup ke baad seedha role ka dashboard (left-sidebar layout) kholo.
+        if (apiUser.role === 'owner') { setOwnerSection('dashboard'); setOwnerPinUnlocked(true); go('owner') }
+        else { setTenantSection('bookings'); go('bookings') }
         return
       } catch (err) {
         if (err instanceof ApiError && err.status >= 400 && err.status < 500) return showToast(err.message)
@@ -288,7 +296,8 @@ export default function App() {
       update((d) => { d.users.push(user); d.session = { userId: user.id, expiresAt: Date.now() + 30 * 86400000 }; return d })
       setAuthOpen(null)
       showToast(`Welcome, ${user.name}! Account ban gaya — 30 din tak login rahega.`)
-      go(user.role === 'owner' ? 'owner' : 'bookings')
+      if (user.role === 'owner') { setOwnerSection('dashboard'); setOwnerPinUnlocked(true); go('owner') }
+      else { setTenantSection('bookings'); go('bookings') }
     } else {
       const user = db.users.find((u) => u.phone === phone)
       const hash = user ? await hashSecret(data.password, user.salt) : ''
@@ -305,7 +314,8 @@ export default function App() {
       update((d) => { d.failedLogins[phone] = { count: 0, lockUntil: 0 }; d.session = { userId: user.id, expiresAt: Date.now() + 30 * 86400000 }; return d })
       setAuthOpen(null)
       showToast(`Welcome back, ${user.name}!`)
-      go(user.role === 'owner' ? 'owner' : 'bookings')
+      if (user.role === 'owner') { setOwnerSection('dashboard'); setOwnerPinUnlocked(true); go('owner') }
+      else { setTenantSection('bookings'); go('bookings') }
     }
   }
 
@@ -338,6 +348,7 @@ export default function App() {
         setAuthOpen(null)
         setAdminUnlocked(true)
         showToast(`Welcome back, Admin ${uname}!`)
+        setAdminSection('dashboard')
         go('admin')
         return
       } catch (err) {
@@ -367,6 +378,7 @@ export default function App() {
     setAuthOpen(null)
     setAdminUnlocked(true)
     showToast(`Welcome back, Admin ${acc.username}!`)
+    setAdminSection('dashboard')
     go('admin')
   }
 
@@ -439,6 +451,7 @@ export default function App() {
 
   function logout() {
     clearToken()
+    setOwnerPinUnlocked(false)
     update((d) => { d.session = null; return d })
     showToast('Logout ho gaya.')
     go('home')
@@ -634,7 +647,7 @@ export default function App() {
             <div className="dash-content">
               <OwnerView db={viewDb} sessionUser={sessionUser} update={update} showToast={showToast}
                 apiIds={apiIds} onApiBeds={handleApiBeds} onApiDelete={handleApiDelete}
-                section={ownerSection} setSection={setOwnerSection}
+                section={ownerSection} setSection={setOwnerSection} freshLoginUnlocked={ownerPinUnlocked}
                 onAuth={() => setAuthOpen({ mode: 'login', portal: 'owner' })} onList={() => setListOpen(true)} onLogout={logout} />
             </div>
           </div>
@@ -662,7 +675,7 @@ export default function App() {
         )}
       </main>
 
-      <SiteFooter onGo={go} />
+      <SiteFooter onGo={go} onGoCity={(c) => { setCity(c); go('home') }} />
 
       {/* Mobile bottom tab bar */}
       <nav className="bottom-bar" aria-label="Mobile">
@@ -1516,13 +1529,17 @@ function OwnerView(props: {
   apiIds: Set<string>; onApiBeds: (id: string, availableBeds: number) => Promise<boolean>
   onApiDelete: (id: string) => Promise<boolean>
   section: OwnerSection; setSection: (s: OwnerSection) => void
+  // True right after a fresh password login/signup: the owner already proved
+  // who they are, so the Portal PIN is not asked again for this session.
+  freshLoginUnlocked?: boolean
   onAuth: () => void; onList: () => void; onLogout: () => void
 }) {
   const { db, sessionUser } = props
   const tab = props.section
   const [pin, setPin] = useState('')
   const [newPin, setNewPin] = useState('')
-  const [pinOk, setPinOk] = useState(false)
+  const [pinOk, setPinOk] = useState(props.freshLoginUnlocked ?? false)
+  useEffect(() => { if (props.freshLoginUnlocked) setPinOk(true) }, [props.freshLoginUnlocked])
   const [tName, setTName] = useState('')
   const [tPhone, setTPhone] = useState('')
   const [tRoom, setTRoom] = useState('')
@@ -1621,7 +1638,7 @@ function OwnerView(props: {
           </div>
         </div>
       ) : null}
-      {pinOk && <p className="small" style={{ color: '#0e7a5f' }}><Check size={14} /> Portal unlocked — PIN verified.</p>}
+      {pinOk && <p className="small" style={{ color: '#0e7a5f' }}><Check size={14} /> {props.freshLoginUnlocked ? 'Portal unlocked — password login se khula hai, PIN ki zaroorat nahi.' : 'Portal unlocked — PIN verified.'}</p>}
 
       {tab === 'dashboard' && (
         <>
@@ -2166,26 +2183,44 @@ function AdminView(props: {
 }
 
 /* ---------------- Footer (SEO) ---------------- */
-function SiteFooter({ onGo }: { onGo: (v: View) => void }) {
+function SiteFooter({ onGo, onGoCity }: { onGo: (v: View) => void; onGoCity: (c: CityFilter) => void }) {
   return (
-    <footer>
+    <footer className="site-footer">
       <div className="container">
-        <h3>StayHazaribagh — Hazaribagh aur Ranchi ka apna PG finder</h3>
-        <p>Hazaribagh me PG dhoondhna ab aasan hai — Matwari, Korrah, Babugaon, Near VBU, Jhanda Chowk, Hirabag. Ranchi me Lalpur, Bariatu, Kanke Road, Harmu, Doranda, Ashok Nagar. Boys PG, girls hostel, co-ed PG — sab ek jagah, bina brokerage ke.</p>
-        <h4 style={{ color: '#fff' }}>Popular Searches</h4>
-        <div className="popular">
-          {['PG in Hazaribagh', 'Hostel in Hazaribagh', 'Girls hostel Hazaribagh', 'Boys PG Hazaribagh', 'PG near VBU', 'Matwari PG', 'Korrah hostel', 'PG in Ranchi', 'Lalpur PG Ranchi', 'Bariatu hostel', 'Hostel in Ranchi', 'PG with food Hazaribagh'].map((s) => (
-            <a key={s} href="#listings" onClick={(e) => { e.preventDefault(); onGo('home') }}>{s}</a>
-          ))}
+        <div className="footer-grid">
+          <div className="footer-col footer-brand">
+            <img src="/logo.png" alt="StayHazaribagh logo" width={52} height={52} />
+            <b>StayHazaribagh<em>.</em></b>
+            <p>PG &amp; Hostel Finder — Hazaribagh • Ranchi, Jharkhand</p>
+            <p>Free listing • Free search • Bina brokerage ke.</p>
+          </div>
+          <div className="footer-col">
+            <h4>Quick Links</h4>
+            <button type="button" onClick={() => onGo('home')}><Home size={15} /> Home</button>
+            <button type="button" onClick={() => onGo('bookings')}><BookOpen size={15} /> My Bookings</button>
+            <button type="button" onClick={() => onGo('owner')}><Building2 size={15} /> Owner Portal</button>
+            <button type="button" className="footer-admin-link" onClick={() => onGo('admin')}><Crown size={15} /> Super Admin</button>
+          </div>
+          <div className="footer-col">
+            <h4>Cities</h4>
+            <button type="button" onClick={() => onGoCity('Hazaribagh')}><MapPin size={15} /> Hazaribagh</button>
+            <p className="small">Matwari • Korrah • Babugaon • Near VBU • Jhanda Chowk • Hirabag</p>
+            <button type="button" onClick={() => onGoCity('Ranchi')}><MapPin size={15} /> Ranchi</button>
+            <p className="small">Lalpur • Bariatu • Kanke Road • Harmu • Doranda • Ashok Nagar</p>
+          </div>
+          <div className="footer-col">
+            <h4>Popular Searches</h4>
+            <div className="popular">
+              {['PG in Hazaribagh', 'Hostel in Hazaribagh', 'Girls hostel Hazaribagh', 'Boys PG Hazaribagh', 'PG near VBU', 'Matwari PG', 'Korrah hostel', 'PG in Ranchi', 'Lalpur PG Ranchi', 'Bariatu hostel', 'Hostel in Ranchi', 'PG with food Hazaribagh'].map((s) => (
+                <a key={s} href="#listings" onClick={(e) => { e.preventDefault(); onGo('home') }}>{s}</a>
+              ))}
+            </div>
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 24 }}>
-          <button className="btn btn-ghost btn-sm" onClick={() => onGo('home')}>Home</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => onGo('bookings')}>My Bookings</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => onGo('owner')}>Owner Portal</button>
-          <button className="btn btn-ghost btn-sm footer-admin-link" onClick={() => onGo('admin')}>Super Admin</button>
+        <div className="footer-bottom">
+          <span>© 2026 StayHazaribagh — Hazaribagh • Ranchi, Jharkhand, India</span>
+          <span>Listings by default Not Verified hoti hain; Super Admin verify karta hai. Reviews sirf is site par likhe gaye hain.</span>
         </div>
-        <p className="small" style={{ marginTop: 24 }}>StayHazaribagh — Free listing, free search. Listings by default Not Verified hoti hain; Super Admin verify karta hai. Reviews sirf is site par likhe gaye hain.</p>
-        <p className="small">Hazaribagh • Ranchi — Jharkhand, India</p>
       </div>
     </footer>
   )
