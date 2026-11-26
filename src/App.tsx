@@ -675,7 +675,9 @@ export default function App() {
         )}
       </main>
 
-      <SiteFooter onGo={go} onGoCity={(c) => { setCity(c); go('home') }} />
+      {/* Footer: public home page only — hidden on dashboard views (Tenant,
+          Owner, Super Admin) so those pages stay short. */}
+      {view === 'home' && <SiteFooter onGo={go} onGoCity={(c) => { setCity(c); go('home') }} />}
 
       {/* Mobile bottom tab bar */}
       <nav className="bottom-bar" aria-label="Mobile">
