@@ -55,9 +55,6 @@ label{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}
 /* Avatar + naam bhi ek button hai — dabao to apna dashboard khulta hai */
 .account-chip-btn{display:inline-flex;align-items:center;gap:8px;background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer;min-width:0}
 .account-chip-btn .account-name{overflow:hidden;text-overflow:ellipsis}
-/* Landing page par logged-in user ke liye "wapas dashboard" strip */
-.welcome-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#fff;border:1.5px solid var(--line);border-radius:14px;padding:12px 16px;margin-bottom:16px;font-size:15px}
-.welcome-strip .btn{white-space:nowrap}
 .admin-chip{background:#fef3c7;border-color:#f0d9a0}
 .avatar{width:32px;height:32px;border-radius:50%;background:var(--teal);color:#fff;display:grid;place-items:center;font-size:14px}
 .brand-line{height:3px;background:linear-gradient(90deg,var(--teal),var(--orange))}

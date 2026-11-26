@@ -732,9 +732,6 @@ export default function App() {
             onSelect={setSelected} onList={() => setListOpen(true)} onGo={go}
             savedIds={savedIds} onToggleSave={toggleSave}
             onClearFilters={() => { setCity('Both'); setLocality('All'); setGender('All'); setMaxRent(8000); setQuery(''); setVerifiedTab('All'); setPage(1) }}
-            sessionUserName={adminSessionUser ? adminSessionUser.username : sessionUser ? sessionUser.name.split(' ')[0] : null}
-            dashboardLabel={adminSessionUser ? 'Admin Console' : 'My Dashboard'}
-            onGoDashboard={goToDashboard}
           />
         )}
         {view === 'bookings' && (
@@ -914,8 +911,6 @@ function HomeView(props: {
   onSelect: (p: Property) => void; onList: () => void; onGo: (v: View) => void
   savedIds: string[]; onToggleSave: (id: string) => void
   onClearFilters: () => void
-  /** Logged-in user ke liye landing page se dashboard wapas jaane ka rasta. */
-  sessionUserName: string | null; dashboardLabel: string; onGoDashboard: () => void
 }) {
   const { db, filtered } = props
   const unverifiedCount = props.totalProps - props.verifiedCount
@@ -941,12 +936,6 @@ function HomeView(props: {
     <>
       <section className="hero">
         <div className="container hero-inner">
-          {props.sessionUserName && (
-            <div className="welcome-strip">
-              <span>Welcome back, <b>{props.sessionUserName}</b> — apna dashboard kholo</span>
-              <button className="btn btn-orange" onClick={props.onGoDashboard}><LayoutDashboard size={16} /> {props.dashboardLabel}</button>
-            </div>
-          )}
           <span className="pill-badge"><MapPin size={14} /> Hazaribagh • Ranchi — Jharkhand</span>
           <h1>Hazaribagh me apna <mark>PG dhoondho</mark>, bina brokerage ke.</h1>
           <p>Matwari, Korrah, Babugaon, Near VBU, Lalpur, Bariatu — live bed availability dekho, owner se seedha baat karo, aur visit book karo. Makan malik ke liye listing bilkul FREE hai.</p>
