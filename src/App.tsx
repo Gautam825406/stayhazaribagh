@@ -553,7 +553,7 @@ export default function App() {
             </button>
           )}
           <a className="brand" href="#" onClick={(e) => { e.preventDefault(); go('home') }} aria-label="StayHazaribagh home">
-            <span className="brand-mark"><b>S</b><i><BedDouble size={12} /></i></span>
+            <img className="brand-mark" src="/logo.png" alt="StayHazaribagh logo" width={46} height={46} />
             <span>
               <span className="brand-name">StayHazaribagh<em>.</em></span>
               <span className="brand-sub">Hazaribagh • Ranchi — Jharkhand</span>
@@ -1175,6 +1175,10 @@ function AuthHub(props: {
     <div className="overlay" onClick={props.onClose}>
       <div className="sheet auth-sheet" style={{ maxWidth: 500 }} onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Login ya Sign Up">
         <div className="grab-handle" aria-hidden="true" />
+        <div className="auth-brand">
+          <img src="/logo.png" alt="StayHazaribagh logo" width={56} height={56} />
+          <span>StayHazaribagh<em>.</em></span>
+        </div>
         <div className="sheet-head">
           <h2 style={{ margin: 0 }}>{portal === 'admin' ? 'Super Admin Login' : props.mode === 'login' ? 'Login karo' : 'Free account banao'}</h2>
           <button className="close-btn" onClick={props.onClose} aria-label="Close"><X size={18} /></button>

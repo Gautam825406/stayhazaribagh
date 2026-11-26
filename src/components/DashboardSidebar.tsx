@@ -49,6 +49,10 @@ export default function DashboardSidebar(props: DashboardSidebarProps) {
         className={`dash-sidebar ${props.collapsed ? 'collapsed' : ''} ${props.drawerOpen ? 'open' : ''}`}
         aria-label={props.title}
       >
+        <div className="dash-sidebar-brand">
+          <img src="/logo.png" alt="StayHazaribagh logo" width={40} height={40} />
+          <span>StayHazaribagh<em>.</em></span>
+        </div>
         <div className="dash-sidebar-head">
           <div className="dash-sidebar-user">
             <span className="dash-avatar">{props.userInitial}</span>
